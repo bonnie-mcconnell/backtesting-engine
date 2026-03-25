@@ -17,9 +17,13 @@ TEST_WINDOW_YEARS: int = 1
 MOVING_AVERAGE_SHORT_DAYS: int = 50
 MOVING_AVERAGE_LONG_DAYS: int = 200
 
+# Annualisation
+ANNUALISATION_FACTOR: int = 252  # Trading days per year. used to annualise daily Sharpe ratio
+
 # Monte Carlo permutation test
-N_PERMUTATIONS: int = 10_000  # Below 1,000 the p-value estimate is noisy; above 100,000 gives diminishing returns
+N_PERMUTATIONS: int = 10_000  # Below 1,000 the p-value estimate is noisy and above 100,000 gives diminishing returns
 SIGNIFICANCE_THRESHOLD: float = 0.05  # Fisher's conventional threshold, treat as a guideline, not a hard rule
 
 # Data
 TICKER: str = "SPY"  # S&P 500 ETF, liquid, 30 years of data
+

@@ -43,6 +43,7 @@ def walk_forward(data: pd.DataFrame, strategy: BaseStrategy) -> BacktestResult:
         simulation_result = run_simulation(test_data, signals)
 
         if not simulation_result.trades or simulation_result.portfolio_values is None:
+            window_start += test_days
             continue
 
         # run metrics on simulation result

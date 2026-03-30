@@ -27,3 +27,4 @@ SIGNIFICANCE_THRESHOLD: float = 0.05  # Fisher's conventional threshold, treat a
 # Data
 TICKER: str = "SPY"  # S&P 500 ETF, liquid, 30 years of data
 
+START_DATE: str = "1993-01-01"

@@ -32,9 +32,14 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
     entry_date: pd.Timestamp | None = None
     trades = []
 
-    for i, signal in signals.items():
-        date = pd.Timestamp(str(i))
-        current_price = float(str(data.loc[date, 'close']))
+    if len(data) != len(signals):
+            raise ValueError(f"Data length {len(data)} does not match signals length {len(signals)}.")
+
+    close_prices = data['close'].to_numpy()
+
+    for idx, (date, signal) in enumerate(signals.items()):
+        date = pd.Timestamp(str(date))
+        current_price = float(close_prices[idx])
 
         if shares_held == 0 and signal == 1:  # Buy signal
             position_value = cash * POSITION_SIZE_FRACTION
@@ -47,7 +52,7 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
         elif shares_held > 0 and signal == -1:  # Sell signal
             if entry_price is None or entry_date is None:
                 continue
-            sell_proceeds = shares_held *current_price
+            sell_proceeds = shares_held * current_price
             sell_cost = sell_proceeds * TRANSACTION_COST_RATE
             buy_cost = shares_held * entry_price * TRANSACTION_COST_RATE
             pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)

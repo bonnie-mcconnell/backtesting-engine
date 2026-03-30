@@ -4,11 +4,11 @@ Generates buy/sell signals based on the golden cross (50/200-day MA crossover).
 """
 import pandas as pd
 
-from backtesting_engine.strategy.base import Strategy
+from backtesting_engine.strategy.base import BaseStrategy
 from backtesting_engine.config import MOVING_AVERAGE_LONG_DAYS, MOVING_AVERAGE_SHORT_DAYS
 
 
-class MovingAverageStrategy(Strategy):
+class MovingAverageStrategy(BaseStrategy):
     """
     Implements a simple moving average crossover strategy.
     Generates buy signals when the short-term moving average crosses above the long-term moving average,

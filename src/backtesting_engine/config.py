@@ -10,7 +10,7 @@ TRANSACTION_COST_RATE: float = 0.001  # 0.1% per trade, reflects retail brokerag
 
 # Walk-forward validation windows
 TRAINING_WINDOW_YEARS: int = 3  # 3:1 train/test ratio - captures a full bull/bear cycle without overfitting to a single regime
-TEST_WINDOW_YEARS: int = 1
+TESTING_WINDOW_YEARS: int = 1
 
 # Moving average crossover strategy (golden cross/death cross)
 # 50/200-day pair: industry-standard signal for equity trend following

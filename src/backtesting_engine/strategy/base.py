@@ -8,7 +8,7 @@ and returns a signal Series with values: 1 (buy), -1 (sell), 0 (hold).
 from abc import ABC, abstractmethod
 import pandas as pd
 
-class Strategy(ABC):
+class BaseStrategy(ABC):
     """
     Abstract base class for trading strategies.
     Defines the interface that all concrete strategy implementations must follow.

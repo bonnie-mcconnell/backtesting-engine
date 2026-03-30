@@ -40,8 +40,9 @@ def walk_forward(data: pd.DataFrame, strategy: BaseStrategy) -> BacktestResult:
 
         # run simulator for strategy on test data
         signals = strategy.generate_signals(test_data)
+        
         simulation_result = run_simulation(test_data, signals)
-
+        
         if not simulation_result.trades or simulation_result.portfolio_values is None:
             window_start += test_days
             continue

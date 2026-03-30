@@ -3,7 +3,7 @@
 
 # Portfolio settings
 INITIAL_PORTFOLIO_VALUE: float = 100_000.0  # Retail-scale capital, large enough that 0.1% transaction costs (~$100/trade) are meaningful
-POSITION_SIZE_FRACTION: float = 0.05  # Fixed fractional sizing at 5% per trade, allows up to 20 simultaneous positions
+POSITION_SIZE_FRACTION: float = 1.0  # Fixed fractional sizing at 5% per trade, allows up to 20 simultaneous positions
 
 # Transaction costs
 TRANSACTION_COST_RATE: float = 0.001  # 0.1% per trade, reflects retail brokerage

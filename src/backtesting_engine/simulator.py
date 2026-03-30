@@ -73,6 +73,26 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
             entry_date = None
         
         portfolio_values.append(cash + (shares_held * current_price))
+
+
+    # Close any open position at end of window using last available price
+    if shares_held > 0 and entry_price is not None and entry_date is not None:
+        final_price = float(close_prices[-1])
+        final_date = pd.Timestamp(str(signals.index[-1]))
+        sell_proceeds = shares_held * final_price
+        sell_cost = sell_proceeds * TRANSACTION_COST_RATE
+        buy_cost = shares_held * entry_price * TRANSACTION_COST_RATE
+        pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)
+        trades.append(Trade(
+            entry_date=entry_date,
+            exit_date=final_date,
+            entry_price=entry_price,
+            exit_price=final_price,
+            shares=shares_held,
+            transaction_costs=buy_cost + sell_cost,
+            pnl=pnl,
+        ))
+        cash += (sell_proceeds - sell_cost)
     
     portfolio_series = pd.Series(portfolio_values, index=signals.index)
 

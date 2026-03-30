@@ -5,7 +5,7 @@ This module fetches data for a given ticker and date range, returning it as a pa
 import yfinance as yf
 import pandas as pd
 
-def download_data(ticker: str, start_date: str) -> pd.DataFrame:
+def load_data(ticker: str, start_date: str) -> pd.DataFrame:
     """
     Download historical stock data using yfinance.
     

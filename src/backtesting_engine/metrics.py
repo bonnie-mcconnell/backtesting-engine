@@ -81,7 +81,7 @@ def _sharpe(returns_array: np.ndarray) -> float:
     """
     Annualised Sharpe ratio: mean return divided by return volatility.
 
-    Returns 0.0 if standard deviation is zero (flat returns series).
+    Returns 0.0 if standard deviation is near zero (flat returns series).
 
     Args:
         returns_array: Daily returns as a NumPy array.
@@ -90,7 +90,7 @@ def _sharpe(returns_array: np.ndarray) -> float:
         Annualised Sharpe ratio.
     """
     std = returns_array.std(ddof=1)
-    if std == 0.0:
+    if std < 1e-10:  # guard against near-zero std from floating point noise
         return 0.0
     return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
 
@@ -99,7 +99,7 @@ def _sortino(returns_array: np.ndarray) -> float:
     """
     Annualised Sortino ratio: mean return divided by downside volatility.
 
-    Returns float('inf') if downside volatility is zero (no downside risk).
+    Returns float('inf') if downside volatility is near zero (no downside risk).
 
     Args:
         returns_array: Daily returns as a NumPy array.
@@ -111,7 +111,7 @@ def _sortino(returns_array: np.ndarray) -> float:
     if len(downside_returns) == 0:
         return float('inf')
     std = downside_returns.std(ddof=1)
-    if std == 0.0:
+    if std < 1e-10:  # guard against near-zero std from floating point noise
         return float('inf')
     return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
 

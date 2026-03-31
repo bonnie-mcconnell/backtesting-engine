@@ -35,30 +35,96 @@ def calculate_metrics(portfolio_values: pd.Series) -> MetricsResult:
     )
     
 
-# Permutes returns to build null distribution of Sharpe ratios under the hypothesis of no edge.
-# p-value is the fraction of random strategies that match or exceed the observed Sharpe.
 def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
+    """
+    Estimate the p-value of the observed Sharpe ratio using block bootstrapping.
+
+    Simple return shuffling is invalid here because the Sharpe ratio is order-invariant —
+    shuffling an array leaves its mean and std unchanged, producing identical Sharpe ratios
+    across all permutations. Block bootstrapping instead samples consecutive blocks of
+    returns, preserving local autocorrelation structure while randomising the global
+    sequence. This produces a genuine null distribution of Sharpe ratios.
+
+    Block size of sqrt(n) follows Politis & Romano (1994) — large enough to preserve
+    autocorrelation, small enough to provide meaningful randomisation.
+
+    The p-value is the fraction of bootstrapped Sharpe ratios that meet or exceed the
+    observed Sharpe. A low p-value indicates the strategy's performance is unlikely to
+    have arisen by chance given the return structure of the data.
+
+    Args:
+        returns_array: Daily returns as a NumPy array.
+
+    Returns:
+        p-value between 0 and 1.
+    """
     observed_sharpe = _sharpe(returns_array)
+    rng = np.random.default_rng(seed=42)
+    n = len(returns_array)
+    block_size = int(np.sqrt(n))  # standard block size choice
     random_sharpes = []
-    rng = np.random.default_rng(seed=42)  # reproducible results
+    
     for _ in range(N_PERMUTATIONS):
-        shuffled = rng.permutation(returns_array)
+        # build a shuffled array by randomly sampling blocks
+        indices = []
+        while len(indices) < n:
+            start = rng.integers(0, n)
+            block = list(range(start, min(start + block_size, n)))
+            indices.extend(block)
+        shuffled = returns_array[indices[:n]]
         random_sharpes.append(_sharpe(shuffled))
+    
     return float(np.mean(np.array(random_sharpes) >= observed_sharpe))
 
 
-def _sharpe(returns_array: np.ndarray) -> float: 
-    return returns_array.mean() / returns_array.std(ddof=1) * (np.sqrt(ANNUALISATION_FACTOR))
+def _sharpe(returns_array: np.ndarray) -> float:
+    """
+    Annualised Sharpe ratio: mean return divided by return volatility.
+
+    Returns 0.0 if standard deviation is zero (flat returns series).
+
+    Args:
+        returns_array: Daily returns as a NumPy array.
+
+    Returns:
+        Annualised Sharpe ratio.
+    """
+    std = returns_array.std(ddof=1)
+    if std == 0.0:
+        return 0.0
+    return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
 
 
 def _sortino(returns_array: np.ndarray) -> float:
+    """
+    Annualised Sortino ratio: mean return divided by downside volatility.
+
+    Returns float('inf') if downside volatility is zero (no downside risk).
+
+    Args:
+        returns_array: Daily returns as a NumPy array.
+
+    Returns:
+        Annualised Sortino ratio.
+    """
     downside_returns = returns_array[returns_array < 0]
     if len(downside_returns) == 0:
-        return float('inf')  # No downside volatility, perfect score
-    return returns_array.mean() / downside_returns.std(ddof=1) * (np.sqrt(ANNUALISATION_FACTOR))
-
+        return float('inf')
+    std = downside_returns.std(ddof=1)
+    if std == 0.0:
+        return float('inf')
+    return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
 
 def _max_drawdown(returns: np.ndarray) -> float:
+    """
+    Maximum drawdown: the largest peak-to-trough decline in cumulative returns.
+
+    Args:
+        returns: Daily returns as a NumPy array.
+
+    Returns:
+        Maximum drawdown as a percentage.
+    """
     cumulative = np.cumprod(1 + returns)
     rolling_max = np.maximum.accumulate(cumulative)
     drawdown = (cumulative - rolling_max) / rolling_max
@@ -66,6 +132,18 @@ def _max_drawdown(returns: np.ndarray) -> float:
 
 
 def _calmar(returns_array: np.ndarray) -> float:
+    """
+    Annualised Calmar ratio: mean return divided by maximum drawdown.
+
+    Returns float('inf') if maximum drawdown is zero (no risk).
+
+    Args:
+        returns_array: Daily returns as a NumPy array.
+
+    Returns:
+        Annualised Calmar ratio.
+
+    """
     annualised = (1 + float(np.mean(returns_array))) ** ANNUALISATION_FACTOR - 1
     max_dd = abs(_max_drawdown(returns_array))
     if max_dd == 0.0:
@@ -74,6 +152,17 @@ def _calmar(returns_array: np.ndarray) -> float:
 
 
 def _omega(returns_array: np.ndarray) -> float:
+    """
+    Omega ratio: sum of gains above threshold divided by sum of losses below threshold.
+    
+    Returns float('inf') if there are no losses below the threshold.
+    
+    Args:
+        returns_array: Daily returns as a NumPy array.
+    
+    Returns:
+        Omega ratio.
+    """
     threshold = 0.0
     gains = returns_array[returns_array > threshold] - threshold
     losses = threshold - returns_array[returns_array < threshold]

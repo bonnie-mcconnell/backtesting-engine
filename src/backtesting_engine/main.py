@@ -25,9 +25,14 @@ def main() -> None:
               f"Sortino Ratio: {window_result.metrics_result.sortino_ratio:.2f}, "
               f"Max Drawdown: {window_result.metrics_result.max_drawdown:.2%}, "
               f"P-value: {window_result.metrics_result.p_value:.4f}")
-    print(f"Summary Metrics - Sharpe Ratio: {result.summary_metrics.sharpe_ratio:.2f}, "
-          f"Sortino Ratio: {result.summary_metrics.sortino_ratio:.2f}, Max Drawdown: {result.summary_metrics.max_drawdown:.2%}, "
-          f"P-value: {result.summary_metrics.p_value:.4f}")
+    
+    print("\nSummary Metrics:")
+    print(f"  Sharpe Ratio:  {result.summary_metrics.sharpe_ratio:.2f}")
+    print(f"  Sortino Ratio: {result.summary_metrics.sortino_ratio:.2f}")
+    print(f"  Max Drawdown:  {result.summary_metrics.max_drawdown:.2%}")
+    print(f"  Calmar Ratio:  {result.summary_metrics.calmar_ratio:.2f}")
+    print(f"  Omega Ratio:   {result.summary_metrics.omega_ratio:.2f}")
+    print(f"  P-value:       {result.summary_metrics.p_value:.4f}")
     
     if result.summary_metrics.p_value < SIGNIFICANCE_THRESHOLD:
         print("Strategy is statistically significant (p < 0.05).")

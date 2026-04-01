@@ -11,7 +11,12 @@ from backtesting_engine.strategy.base import BaseStrategy
 from backtesting_engine.simulator import run_simulation
 from backtesting_engine.config import TRAINING_WINDOW_YEARS, TESTING_WINDOW_YEARS, ANNUALISATION_FACTOR
 
-def walk_forward(data: pd.DataFrame, strategy: BaseStrategy) -> BacktestResult:
+def walk_forward(
+    data: pd.DataFrame,
+    strategy: BaseStrategy,
+    training_window_years: int = TRAINING_WINDOW_YEARS,
+    testing_window_years: int = TESTING_WINDOW_YEARS,
+) -> BacktestResult:
     """
     Performs walk-forward analysis on the given data using the specified strategy.
 
@@ -23,8 +28,8 @@ def walk_forward(data: pd.DataFrame, strategy: BaseStrategy) -> BacktestResult:
         BacktestResult: The results of the walk-forward analysis, including performance metrics and trade details.
     """
 
-    train_days = int(TRAINING_WINDOW_YEARS * ANNUALISATION_FACTOR)
-    test_days = int(TESTING_WINDOW_YEARS * ANNUALISATION_FACTOR)
+    train_days = training_window_years * ANNUALISATION_FACTOR
+    test_days = testing_window_years * ANNUALISATION_FACTOR
 
     window_start = 0
     window_results: list[WindowResult] = []

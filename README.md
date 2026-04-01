@@ -93,11 +93,12 @@ Downloads SPY data from 1993, runs rolling walk-forward evaluation, prints per-w
 poetry run pytest -v
 ```
 
-30 tests across three modules:
+32 tests across four modules:
 
 - **`test_metrics.py`** - each metric function verified against hand-calculated expected values; edge cases including zero standard deviation, no downside returns, and zero drawdown
 - **`test_simulator.py`** - complete buy/sell cycle with explicit PnL and cost verification; no-signal flat portfolio; end-of-window position closing; data/signal mismatch guard
 - **`test_walk_forward.py`** - correct window count for known data lengths; no look-ahead bias (test start always after train end); correct window advancement; insufficient data raises
+- **`test_data/test_ingestion.py`** - mocked yfinance download verifying correct column structure; empty response raises ValueError
 
 ---
 

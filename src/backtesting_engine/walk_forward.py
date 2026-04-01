@@ -23,6 +23,8 @@ def walk_forward(
     Args:
         data (pd.DataFrame): The historical price data for backtesting.
         strategy (BaseStrategy): The trading strategy to be evaluated.
+        training_window_years (int): The number of years to use for the training window.
+        testing_window_years (int): The number of years to use for the testing window.
 
     Returns:
         BacktestResult: The results of the walk-forward analysis, including performance metrics and trade details.

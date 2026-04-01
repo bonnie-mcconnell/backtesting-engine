@@ -1,7 +1,7 @@
 """
 Main entry point for the backtesting engine. 
 Ingests and validates data, instantiates strategy, 
-runs walk-foward orchestrator with data and strategy, 
+runs walk-forward orchestrator with data and strategy, 
 prints results for each window, summary metrics and significance.
 """
 from backtesting_engine.config import SIGNIFICANCE_THRESHOLD, TICKER, START_DATE

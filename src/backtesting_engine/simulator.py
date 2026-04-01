@@ -8,7 +8,7 @@ The results are returned in a structured SimulationResult object for analysis.
 import pandas as pd
 
 from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE, POSITION_SIZE_FRACTION, TRANSACTION_COST_RATE
-from backtesting_engine.models import Trade, SimulationResult 
+from backtesting_engine.models import Trade, SimulationResult
 
 
 def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:

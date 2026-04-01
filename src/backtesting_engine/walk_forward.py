@@ -96,7 +96,14 @@ def walk_forward(
 
 def _aggregate_metric(window_results: list[WindowResult], metric: str) -> float:
     """
-    Aggregates a specific metric across all windows by calculating the mean.
+    Compute the mean of a named metric across all walk-forward windows.
+
+    Args:
+        window_results: List of completed window results.
+        metric: Field name on MetricsResult to aggregate (e.g. 'sharpe_ratio').
+
+    Returns:
+        Mean value of the metric across all windows.
     """
     values = [getattr(w.metrics_result, metric) for w in window_results]
     return float(np.mean(values))

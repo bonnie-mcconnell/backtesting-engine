@@ -12,7 +12,6 @@ def load_data(ticker: str, start_date: str) -> pd.DataFrame:
     Args:
         ticker: Stock ticker symbol (e.g 'SPY').
         start_date: Start date in 'YYYY-MM-DD' format.
-        end_date computed inside function as current date.
     
     Returns:
         DataFrame containing DatetimeIndex and 'close' price column containing adjusted closing prices.

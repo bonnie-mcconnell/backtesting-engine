@@ -5,8 +5,6 @@
 
 A backtesting engine that tests whether a trading strategy has a statistically significant edge - not just whether it made money on historical data.
 
-Built as a quant finance portfolio project by Bonnie McConnell, second-year CS + Statistics, Massey University NZ.
-
 ---
 
 ## The problem with simple backtests
@@ -68,8 +66,11 @@ The engine separates five concerns, each independently testable:
 | `metrics.py` | Returns-based performance metrics and Monte Carlo significance test |
 | `walk_forward.py` | Rolling window orchestration and cross-window aggregation |
 | `models.py` | Typed dataclass contracts between pipeline stages |
+| `config.py` | All named constants with justifications - no magic numbers anywhere in the codebase |
 
-The strategy layer uses an abstract base class so new strategies can be added without touching any other component. The orchestrator depends only on the `BaseStrategy` interface, not any concrete implementation.
+The strategy layer uses an abstract base class so new strategies can be added without touching any other component. The orchestrator depends only on the `BaseStrategy` interface, not any concrete implementation. Any new strategy (momentum, mean reversion, ML-based) can be dropped in by implementing one method, with zero changes to the simulator, metrics, or orchestrator.
+
+Typed dataclasses enforce the contracts between pipeline stages at definition time, making integration bugs visible immediately rather than at runtime.
 
 ---
 
@@ -110,6 +111,8 @@ poetry run pytest -v
 **Why full portfolio allocation?** The engine uses 100% position sizing so that all returns are attributable to the strategy rather than to uninvested cash. Partial allocation dilutes metrics with cash drag, making the strategy appear more stable than it is.
 
 **Why a day-by-day simulation loop?** Explicit iteration makes the execution logic transparent and easy to test. A vectorised implementation would be faster but harder to verify. For a single-asset engine evaluated over decades of daily data, the performance is acceptable.
+
+**Why a dedicated config module?** Every constant - transaction cost rate, window sizes, moving average periods, Monte Carlo iterations - lives in one file with a name and a comment explaining its value. This means a reader never encounters a bare 0.001 or 252 and has to guess what it represents. It also means changing any parameter requires editing exactly one line in one file.
 
 ---
 

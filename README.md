@@ -37,18 +37,17 @@ Running the engine on SPY from 1993 to present with a 50/200-day moving average 
 
 ```
 Walk-forward analysis completed. Results:
-Train: 1993-01-29 to 1996-01-25, Test: 1996-01-26 to 1997-01-23, Sharpe: 1.11, Sortino: 0.75, Max DD: -4.93%, P-value: 0.5356
-Train: 2009-02-02 to 2012-01-31, Test: 2012-02-01 to 2013-02-01, Sharpe: 2.22, Sortino: 2.58, Max DD: -2.99%, P-value: 0.5372
+Train: 1993-01-29 to 1996-01-25, Test: 1996-01-26 to 1997-01-23, Sharpe Ratio: 1.11, Sortino Ratio: 0.75, Max Drawdown: -4.93%, P-value: 0.5356
+Train: 1994-01-27 to 1997-01-23, Test: 1997-01-24 to 1998-01-23, Sharpe Ratio: 0.32, Sortino Ratio: 0.22, Max Drawdown: -6.33%, P-value: 0.4792
 ...
 
 Summary Metrics:
   Sharpe Ratio:  0.63
   Sortino Ratio: 0.47
   Max Drawdown:  -4.16%
-  Calmar Ratio:  0.48
-  Omega Ratio:   1.21
-  P-value:       0.51
-
+  Calmar Ratio:  1.33
+  Omega Ratio:   1.34
+  P-value:       0.5111
 Strategy is not statistically significant (p >= 0.05).
 ```
 

@@ -3,7 +3,7 @@
 ![CI](https://github.com/bonnie-mcconnell/backtesting-engine/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 
-A backtesting engine that tests whether a trading strategy has a statistically significant edge — not just whether it made money on historical data.
+A backtesting engine that tests whether a trading strategy has a statistically significant edge - not just whether it made money on historical data.
 
 Built as a quant finance portfolio project by Bonnie McConnell, second-year CS + Statistics, Massey University NZ.
 
@@ -13,7 +13,7 @@ Built as a quant finance portfolio project by Bonnie McConnell, second-year CS +
 
 Most backtesting tutorials run a strategy on historical data, compute a Sharpe ratio, and call it done. This produces numbers that feel meaningful but aren't. Two things go wrong:
 
-**Look-ahead bias and overfitting.** If you test a strategy on the same data you used to design it, of course it looks good — you've already seen the answers. Even without deliberate cheating, trying enough indicators on one dataset guarantees some will appear predictive purely by chance.
+**Look-ahead bias and overfitting.** If you test a strategy on the same data you used to design it, of course it looks good - you've already seen the answers. Even without deliberate cheating, trying enough indicators on one dataset guarantees some will appear predictive purely by chance.
 
 **No significance testing.** A Sharpe ratio without a p-value is a number without a claim. An observed Sharpe of 0.8 on one historical run could reflect genuine edge or could be noise. Without asking "how often would a random strategy produce this result?", you cannot distinguish the two.
 
@@ -23,11 +23,11 @@ This engine addresses both problems directly.
 
 ## What this engine does differently
 
-**Walk-forward validation** rather than a single train/test split. The engine slices data into rolling windows — train on years 1–3, test on year 4, advance by one year, repeat. Every test period is strictly out-of-sample relative to its training window. The result is ~26 independent out-of-sample evaluations rather than one, which gives a realistic picture of whether strategy performance is consistent across changing market regimes or concentrated in a lucky slice of history.
+**Walk-forward validation** rather than a single train/test split. The engine slices data into rolling windows - train on years 1–3, test on year 4, advance by one year, repeat. Every test period is strictly out-of-sample relative to its training window. The result is ~26 independent out-of-sample evaluations rather than one, which gives a realistic picture of whether strategy performance is consistent across changing market regimes or concentrated in a lucky slice of history.
 
-**Block-bootstrap Monte Carlo significance testing** of the Sharpe ratio. The engine builds a null distribution by resampling consecutive blocks of returns 10,000 times and computing the Sharpe of each. Simple shuffling is invalid here — the Sharpe ratio is order-invariant, so shuffling individual returns produces identical Sharpe values across all permutations. Block bootstrapping preserves local autocorrelation structure while randomising the global sequence, producing a genuine null distribution. The reported p-value is the fraction of bootstrapped strategies that matched or exceeded the observed Sharpe.
+**Block-bootstrap Monte Carlo significance testing** of the Sharpe ratio. The engine builds a null distribution by resampling consecutive blocks of returns 10,000 times and computing the Sharpe of each. Simple shuffling is invalid here - the Sharpe ratio is order-invariant, so shuffling individual returns produces identical Sharpe values across all permutations. Block bootstrapping preserves local autocorrelation structure while randomising the global sequence, producing a genuine null distribution. The reported p-value is the fraction of bootstrapped strategies that matched or exceeded the observed Sharpe.
 
-**All metrics implemented from scratch in NumPy** — Sharpe, Sortino, maximum drawdown, Calmar, Omega. No TA-Lib, no quantstats. Each formula is unit-tested against hand-calculated values.
+**All metrics implemented from scratch in NumPy** - Sharpe, Sortino, maximum drawdown, Calmar, Omega. No TA-Lib, no quantstats. Each formula is unit-tested against hand-calculated values.
 
 ---
 
@@ -95,17 +95,17 @@ poetry run pytest -v
 
 30 tests across three modules:
 
-- **`test_metrics.py`** — each metric function verified against hand-calculated expected values; edge cases including zero standard deviation, no downside returns, and zero drawdown
-- **`test_simulator.py`** — complete buy/sell cycle with explicit PnL and cost verification; no-signal flat portfolio; end-of-window position closing; data/signal mismatch guard
-- **`test_walk_forward.py`** — correct window count for known data lengths; no look-ahead bias (test start always after train end); correct window advancement; insufficient data raises
+- **`test_metrics.py`** - each metric function verified against hand-calculated expected values; edge cases including zero standard deviation, no downside returns, and zero drawdown
+- **`test_simulator.py`** - complete buy/sell cycle with explicit PnL and cost verification; no-signal flat portfolio; end-of-window position closing; data/signal mismatch guard
+- **`test_walk_forward.py`** - correct window count for known data lengths; no look-ahead bias (test start always after train end); correct window advancement; insufficient data raises
 
 ---
 
 ## Design decisions
 
-**Why walk-forward over a single split?** A single 80/20 split produces one test result. That result might be lucky or unlucky — there is no way to tell. Walk-forward produces ~26 independent evaluations. Consistency across windows is evidence of robustness; inconsistency is evidence of luck.
+**Why walk-forward over a single split?** A single 80/20 split produces one test result. That result might be lucky or unlucky - there is no way to tell. Walk-forward produces ~26 independent evaluations. Consistency across windows is evidence of robustness; inconsistency is evidence of luck.
 
-**Why block bootstrap over signal shuffling?** Signal shuffling requires re-running the simulator 10,000 times, which is computationally prohibitive. Simple return shuffling is mathematically invalid for Sharpe (order-invariant). Block bootstrapping is the standard solution from the time-series literature (Politis & Romano, 1994) — it respects autocorrelation structure while producing a genuine null distribution.
+**Why block bootstrap over signal shuffling?** Signal shuffling requires re-running the simulator 10,000 times, which is computationally prohibitive. Simple return shuffling is mathematically invalid for Sharpe (order-invariant). Block bootstrapping is the standard solution from the time-series literature (Politis & Romano, 1994) - it respects autocorrelation structure while producing a genuine null distribution.
 
 **Why full portfolio allocation?** The engine uses 100% position sizing so that all returns are attributable to the strategy rather than to uninvested cash. Partial allocation dilutes metrics with cash drag, making the strategy appear more stable than it is.
 
@@ -124,4 +124,4 @@ poetry run pytest -v
 
 ## What I would build next
 
-The natural extension is a strategy discovery layer — a feature engineering pipeline that derives predictors from price and volume data, trains a gradient boosting model to predict next-day returns, and evaluates the resulting strategy through this engine. The evaluation framework is already in place; the missing piece is a systematic way to generate and filter candidate strategies.
+The natural extension is a strategy discovery layer - a feature engineering pipeline that derives predictors from price and volume data, trains a gradient boosting model to predict next-day returns, and evaluates the resulting strategy through this engine. The evaluation framework is already in place; the missing piece is a systematic way to generate and filter candidate strategies.

@@ -33,7 +33,7 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
     trades = []
 
     if len(data) != len(signals):
-            raise ValueError(f"Data length {len(data)} does not match signals length {len(signals)}.")
+        raise ValueError(f"Data length {len(data)} does not match signals length {len(signals)}.")
 
     close_prices = data['close'].to_numpy()
 

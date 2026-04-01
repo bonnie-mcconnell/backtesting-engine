@@ -95,5 +95,8 @@ def walk_forward(
     
 
 def _aggregate_metric(window_results: list[WindowResult], metric: str) -> float:
+    """
+    Aggregates a specific metric across all windows by calculating the mean.
+    """
     values = [getattr(w.metrics_result, metric) for w in window_results]
     return float(np.mean(values))

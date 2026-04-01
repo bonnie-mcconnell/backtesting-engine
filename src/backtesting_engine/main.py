@@ -14,7 +14,7 @@ from backtesting_engine.walk_forward import walk_forward
 def main() -> None:
     data = load_data(TICKER, START_DATE)
     validate_data(data)
-    strategy = MovingAverageStrategy() 
+    strategy = MovingAverageStrategy()
     result = walk_forward(data, strategy)
 
     print("Walk-forward analysis completed. Results:")

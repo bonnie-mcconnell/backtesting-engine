@@ -1,7 +1,7 @@
 [project]
 name = "backtesting-engine"
 version = "0.1.0"
-description = ""
+description = "Walk-forward backtesting engine with Monte Carlo significance testing"
 authors = [
     {name = "Bonnie McConnell",email = "bonniep.mcconnell@gmail.com"}
 ]

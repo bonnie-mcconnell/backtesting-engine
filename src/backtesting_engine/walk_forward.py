@@ -88,8 +88,8 @@ def walk_forward(
     )
 
     return BacktestResult(
-        strategy_name=strategy.__class__.__name__, 
-        window_results=window_results, 
+        strategy_name=strategy.__class__.__name__,
+        window_results=window_results,
         summary_metrics=summary_metrics
     )
     

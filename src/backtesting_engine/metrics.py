@@ -146,7 +146,7 @@ def _calmar(returns_array: np.ndarray) -> float:
     """
     annualised = (1 + float(np.mean(returns_array))) ** ANNUALISATION_FACTOR - 1
     max_dd = abs(_max_drawdown(returns_array))
-    if max_dd == 0.0:
+    if max_dd < 1e-10:
         return float('inf')
     return annualised / max_dd
 

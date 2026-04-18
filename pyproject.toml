@@ -1,16 +1,18 @@
 [project]
 name = "backtesting-engine"
-version = "0.1.0"
+version = "0.2.0"
 description = "Walk-forward backtesting engine with Monte Carlo significance testing"
 authors = [
-    {name = "Bonnie McConnell",email = "bonniep.mcconnell@gmail.com"}
+    {name = "Bonnie McConnell", email = "bonniep.mcconnell@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "yfinance (>=1.2.0,<2.0.0)",
     "pandas (>=3.0.1,<4.0.0)",
-    "numpy (>=2.4.3,<3.0.0)"
+    "numpy (>=2.4.3,<3.0.0)",
+    "scipy (>=1.15.0,<2.0.0)",
+    "matplotlib (>=3.10.0,<4.0.0)",
 ]
 
 [tool.poetry]
@@ -22,7 +24,21 @@ backtesting-engine = "backtesting_engine.main:main"
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore::RuntimeWarning:numpy",
+    "ignore::DeprecationWarning:yfinance",
 ]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -30,5 +46,7 @@ build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [
-    "pytest (>=9.0.2,<10.0.0)"
+    "pytest (>=9.0.2,<10.0.0)",
+    "mypy (>=1.15.0,<2.0.0)",
+    "ruff (>=0.11.0,<1.0.0)",
 ]

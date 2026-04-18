@@ -1,87 +1,74 @@
 """
-Calculates performance metrics for the backtest.
-Metrics include Sharpe ratio, Sortino ratio, max drawdown, Calmar ratio, Omega ratio, and p-value from a Monte Carlo permutation test.
-"""
-import pandas as pd
-import numpy as np
+Performance metrics for backtested strategies.
 
+All ratio metrics are annualised using ANNUALISATION_FACTOR (252 trading days).
+The risk-free rate is subtracted before computing excess-return ratios; it
+defaults to zero in config but can be changed without touching this module.
+
+Public interface:
+    calculate_metrics(portfolio_values) -> MetricsResult
+
+All private helpers (_sharpe, _sortino, etc.) are also importable for unit
+testing and for use by the strategy grid-search in moving_average.py.
+"""
+
+import numpy as np
+import pandas as pd
+
+from backtesting_engine.config import (
+    ANNUALISATION_FACTOR,
+    BLOCK_BOOTSTRAP_SEED,
+    N_PERMUTATIONS,
+    RISK_FREE_RATE,
+)
 from backtesting_engine.models import MetricsResult
-from backtesting_engine.config import ANNUALISATION_FACTOR, N_PERMUTATIONS
 
 
 def calculate_metrics(portfolio_values: pd.Series) -> MetricsResult:
     """
-    Calculates performance metrics for the backtest, including Sharpe ratio, Sortino ratio, max drawdown, Calmar ratio, Omega ratio, and p-value from a Monte Carlo permutation test.
+    Compute all performance metrics from a daily portfolio value series.
 
     Args:
-        portfolio_values (pd.Series): The daily portfolio values over the backtest period.
+        portfolio_values: Daily mark-to-market portfolio values. NaN rows
+                          are dropped before any calculation.
 
     Returns:
-        MetricsResult containing all calculated performance metrics.
+        MetricsResult containing Sharpe, Sortino, max drawdown, Calmar,
+        Omega, and a block-bootstrap p-value.
+
+    Raises:
+        ValueError: If the returns series is empty after dropping NaNs.
     """
-    portfolio_values = portfolio_values.dropna()
-    returns = portfolio_values.pct_change().dropna()
-    returns_array = returns.to_numpy()
+    clean = portfolio_values.dropna()
+    returns = clean.pct_change().dropna()
+    returns_array = returns.to_numpy(dtype=float)
+
     if len(returns_array) == 0:
-        raise ValueError("No returns to calculate metrics. Check if portfolio values are correctly computed.")
+        raise ValueError(
+            "No returns to compute metrics. "
+            "Check that portfolio_values has at least two non-NaN entries."
+        )
 
     return MetricsResult(
-        sharpe_ratio=_sharpe(returns_array), 
+        sharpe_ratio=_sharpe(returns_array),
         sortino_ratio=_sortino(returns_array),
         max_drawdown=_max_drawdown(returns_array),
         calmar_ratio=_calmar(returns_array),
         omega_ratio=_omega(returns_array),
         p_value=_monte_carlo_p_value(returns_array),
     )
-    
 
-def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
-    """
-    Estimate the p-value of the observed Sharpe ratio using block bootstrapping.
 
-    Simple return shuffling is invalid here because the Sharpe ratio is order-invariant -
-    shuffling an array leaves its mean and std unchanged, producing identical Sharpe ratios
-    across all permutations. Block bootstrapping instead samples consecutive blocks of
-    returns, preserving local autocorrelation structure while randomising the global
-    sequence. This produces a genuine null distribution of Sharpe ratios.
-
-    Block size of sqrt(n) follows Politis & Romano (1994) - large enough to preserve
-    autocorrelation, small enough to provide meaningful randomisation.
-
-    The p-value is the fraction of bootstrapped Sharpe ratios that meet or exceed the
-    observed Sharpe. A low p-value indicates the strategy's performance is unlikely to
-    have arisen by chance given the return structure of the data.
-
-    Args:
-        returns_array: Daily returns as a NumPy array.
-
-    Returns:
-        p-value between 0 and 1.
-    """
-    observed_sharpe = _sharpe(returns_array)
-    rng = np.random.default_rng(seed=42)
-    n = len(returns_array)
-    block_size = int(np.sqrt(n))  # standard block size choice
-    random_sharpes = []
-    
-    for _ in range(N_PERMUTATIONS):
-        # build a shuffled array by randomly sampling blocks
-        indices = []
-        while len(indices) < n:
-            start = rng.integers(0, n)
-            block = list(range(start, min(start + block_size, n)))
-            indices.extend(block)
-        shuffled = returns_array[indices[:n]]
-        random_sharpes.append(_sharpe(shuffled))
-    
-    return float(np.mean(np.array(random_sharpes) >= observed_sharpe))
-
+# ---------------------------------------------------------------------------
+# Individual metric functions
+# ---------------------------------------------------------------------------
 
 def _sharpe(returns_array: np.ndarray) -> float:
     """
-    Annualised Sharpe ratio: mean return divided by return volatility.
+    Annualised Sharpe ratio: mean excess return divided by return volatility.
 
-    Returns 0.0 if standard deviation is near zero (flat returns series).
+    Excess return = raw return minus daily risk-free rate (RISK_FREE_RATE).
+    Returns 0.0 if standard deviation is negligibly small (flat return series).
 
     Args:
         returns_array: Daily returns as a NumPy array.
@@ -89,17 +76,25 @@ def _sharpe(returns_array: np.ndarray) -> float:
     Returns:
         Annualised Sharpe ratio.
     """
-    std = returns_array.std(ddof=1)
-    if std < 1e-10:  # guard against near-zero std from floating point noise
+    excess = returns_array - RISK_FREE_RATE
+    std = excess.std(ddof=1)
+    if std < 1e-10:
         return 0.0
-    return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
+    return float(excess.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
 
 
 def _sortino(returns_array: np.ndarray) -> float:
     """
-    Annualised Sortino ratio: mean return divided by downside volatility.
+    Annualised Sortino ratio: mean excess return divided by downside volatility.
 
-    Returns float('inf') if downside volatility is near zero (no downside risk).
+    Downside volatility is the standard deviation of returns that fall below
+    the risk-free rate (not below zero). This is the theoretically correct
+    definition: the risk-free rate is the threshold investors care about
+    missing, not zero.
+
+    Returns float('inf') if there are no below-threshold returns.
+    Returns 0.0 if mean excess return is zero but downside volatility is
+    positive (strategy matches risk-free return with downside risk).
 
     Args:
         returns_array: Daily returns as a NumPy array.
@@ -107,63 +102,147 @@ def _sortino(returns_array: np.ndarray) -> float:
     Returns:
         Annualised Sortino ratio.
     """
-    downside_returns = returns_array[returns_array < 0]
-    if len(downside_returns) == 0:
-        return float('inf')
-    std = downside_returns.std(ddof=1)
-    if std < 1e-10:  # guard against near-zero std from floating point noise
-        return float('inf')
-    return float(returns_array.mean() / std * np.sqrt(ANNUALISATION_FACTOR))
+    excess = returns_array - RISK_FREE_RATE
+    downside = excess[excess < 0.0]
 
-def _max_drawdown(returns: np.ndarray) -> float:
+    if len(downside) == 0:
+        return float("inf")
+
+    # ddof=1 with a single value yields NaN. Guard explicitly.
+    if len(downside) == 1:
+        # With only one data point we cannot estimate variance; return 0.0
+        # rather than NaN or inf, as neither would be meaningful.
+        return 0.0
+
+    downside_std = downside.std(ddof=1)
+    if downside_std < 1e-10:
+        return float("inf")
+
+    return float(excess.mean() / downside_std * np.sqrt(ANNUALISATION_FACTOR))
+
+
+def _max_drawdown(returns_array: np.ndarray) -> float:
     """
     Maximum drawdown: the largest peak-to-trough decline in cumulative returns.
 
+    Computed on the cumulative product of (1 + r_t), so it correctly handles
+    compounding. The result is expressed as a fraction (e.g. -0.20 = -20%).
+
+    The initial value 1.0 is prepended before computing the running maximum.
+    Without it, a loss on the very first bar would appear as no drawdown because
+    the rolling max would start at the post-loss value rather than the pre-loss
+    value. Prepending 1.0 anchors the peak at the start of the period.
+
     Args:
-        returns: Daily returns as a NumPy array.
+        returns_array: Daily returns as a NumPy array.
 
     Returns:
-        Maximum drawdown as a percentage.
+        Maximum drawdown as a non-positive fraction.
     """
-    cumulative = np.cumprod(1 + returns)
+    # Prepend 1.0 to represent the initial (pre-return) portfolio value.
+    cumulative = np.concatenate([[1.0], np.cumprod(1.0 + returns_array)])
     rolling_max = np.maximum.accumulate(cumulative)
     drawdown = (cumulative - rolling_max) / rolling_max
-    return float(drawdown.min())
+    # Slice off the prepended 1.0 row (always 0.0) before taking min.
+    return float(drawdown[1:].min())
 
 
 def _calmar(returns_array: np.ndarray) -> float:
     """
-    Annualised Calmar ratio: mean return divided by maximum drawdown.
+    Annualised Calmar ratio: annualised return divided by absolute max drawdown.
 
-    Returns float('inf') if maximum drawdown is zero (no risk).
+    Returns float('inf') if max drawdown is zero (no peak-to-trough decline).
 
     Args:
         returns_array: Daily returns as a NumPy array.
 
     Returns:
         Annualised Calmar ratio.
-
     """
-    annualised = (1 + float(np.mean(returns_array))) ** ANNUALISATION_FACTOR - 1
+    annualised_return = (1.0 + float(np.mean(returns_array))) ** ANNUALISATION_FACTOR - 1.0
     max_dd = abs(_max_drawdown(returns_array))
     if max_dd < 1e-10:
-        return float('inf')
-    return annualised / max_dd
+        return float("inf")
+    return annualised_return / max_dd
 
 
-def _omega(returns_array: np.ndarray) -> float:
+def _omega(returns_array: np.ndarray, threshold: float = RISK_FREE_RATE) -> float:
     """
-    Omega ratio: sum of gains above threshold divided by sum of losses below threshold.
-    
-    Returns float('inf') if there are no losses below the threshold.
-    
+    Omega ratio: probability-weighted gains above threshold divided by losses below.
+
+    Unlike Sharpe, Omega uses the full return distribution rather than just
+    mean and variance, so it captures skewness and kurtosis naturally.
+    Threshold defaults to the risk-free rate for consistency with other metrics.
+
+    Returns float('inf') if there are no returns below the threshold.
+
     Args:
         returns_array: Daily returns as a NumPy array.
-    
+        threshold: Minimum acceptable return (default: RISK_FREE_RATE).
+
     Returns:
-        Omega ratio.
+        Omega ratio (always positive; >1 means more gain than loss).
     """
-    threshold = 0.0
-    gains = returns_array[returns_array > threshold] - threshold
-    losses = threshold - returns_array[returns_array < threshold]
-    return gains.sum() / losses.sum() if losses.sum() > 0 else float('inf')
+    gains = (returns_array[returns_array > threshold] - threshold).sum()
+    losses = (threshold - returns_array[returns_array < threshold]).sum()
+    if losses < 1e-10:
+        return float("inf")
+    return float(gains / losses)
+
+
+def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
+    """
+    Block-bootstrap p-value for the observed Sharpe ratio.
+
+    Tests the null hypothesis that the observed Sharpe arose by chance given
+    the return structure of this data. Builds a null distribution by resampling
+    consecutive blocks of returns N_PERMUTATIONS times and computing the Sharpe
+    of each resampled series.
+
+    Why block bootstrap, not simple shuffling:
+        The Sharpe ratio is order-invariant - shuffling individual returns leaves
+        mean and std unchanged, so every permutation produces the identical Sharpe.
+        Block bootstrapping preserves local autocorrelation structure (momentum,
+        mean-reversion) while randomising the global sequence, producing a genuine
+        null distribution. See Politis & Romano (1994).
+
+    Why circular blocks:
+        Standard block bootstrap draws blocks starting at random positions. Blocks
+        near the end of the series are shorter (clipped at array boundary), which
+        systematically underrepresents tail behaviour. Circular bootstrap wraps
+        around the end of the array, ensuring every block has the full block_size
+        and all positions are equally represented.
+
+    Block size:
+        int(sqrt(n)) follows Politis & Romano (1994) - large enough to preserve
+        autocorrelation, small enough to provide meaningful randomisation.
+
+    The reported p-value is the fraction of bootstrapped Sharpes that meet or
+    exceed the observed Sharpe. A low p-value means the strategy's performance
+    is unlikely to have arisen by chance.
+
+    Args:
+        returns_array: Daily returns as a NumPy array.
+
+    Returns:
+        p-value in [0, 1].
+    """
+    observed_sharpe = _sharpe(returns_array)
+    rng = np.random.default_rng(seed=BLOCK_BOOTSTRAP_SEED)
+    n = len(returns_array)
+    block_size = max(1, int(np.sqrt(n)))
+
+    # Tile array twice so circular indexing never goes out of bounds.
+    circular = np.tile(returns_array, 2)
+
+    bootstrapped_sharpes = np.empty(N_PERMUTATIONS)
+    for i in range(N_PERMUTATIONS):
+        # Sample random block start positions; modulo n keeps them in [0, n).
+        starts = rng.integers(0, n, size=(n // block_size) + 1)
+        indices = np.concatenate([
+            np.arange(start, start + block_size) for start in starts
+        ])
+        shuffled = circular[indices[:n]]
+        bootstrapped_sharpes[i] = _sharpe(shuffled)
+
+    return float(np.mean(bootstrapped_sharpes >= observed_sharpe))

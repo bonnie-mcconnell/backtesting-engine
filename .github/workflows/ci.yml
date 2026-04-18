@@ -1,4 +1,5 @@
 name: CI
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -28,5 +29,11 @@ jobs:
       - name: Install dependencies
         run: poetry install
 
+      - name: Lint (ruff)
+        run: poetry run ruff check src/ tests/
+
+      - name: Type check (mypy)
+        run: poetry run mypy src/
+
       - name: Run tests
-        run: poetry run pytest -v
+        run: poetry run pytest -v --tb=short

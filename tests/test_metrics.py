@@ -1,6 +1,6 @@
 """
 Unit tests for metrics module.
-All expected values are computed by hand and hard-coded — never derived from the
+All expected values are computed by hand and hard-coded - never derived from the
 implementation itself, which would make the test circular and unable to catch bugs.
 """
 import numpy as np
@@ -17,7 +17,7 @@ def test_sharpe_zero_mean_returns_zero() -> None:
 
 
 def test_sharpe_zero_std_returns_zero() -> None:
-    # constant returns have near-zero std due to floating point — guard returns 0.0
+    # constant returns have near-zero std due to floating point - guard returns 0.0
     returns = np.array([0.05, 0.05, 0.05])
     assert _sharpe(returns) == 0.0
 
@@ -36,7 +36,7 @@ def test_sharpe_known_value() -> None:
 # --- Sortino ratio ---
 
 def test_sortino_no_downside_returns_inf() -> None:
-    # no negative returns — downside std is undefined, return inf
+    # no negative returns - downside std is undefined, return inf
     returns = np.array([0.01, 0.02, 0.03])
     assert _sortino(returns) == float('inf')
 
@@ -44,7 +44,7 @@ def test_sortino_no_downside_returns_inf() -> None:
 def test_sortino_known_value() -> None:
     # returns = [0.04, -0.02]
     # mean = 0.01
-    # downside returns = [-0.02], std(ddof=1) of single value = nan? No — ddof=1 with n=1 gives nan
+    # downside returns = [-0.02], std(ddof=1) of single value = nan? No - ddof=1 with n=1 gives nan
     # use two downside values: returns = [0.05, -0.01, -0.03]
     # mean = 0.00333...
     # downside = [-0.01, -0.03], std(ddof=1) = 0.014142
@@ -69,7 +69,7 @@ def test_max_drawdown_known_value() -> None:
 
 
 def test_max_drawdown_no_drawdown() -> None:
-    # monotonically increasing — never below peak, drawdown = 0
+    # monotonically increasing - never below peak, drawdown = 0
     returns = np.array([0.01, 0.02, 0.03])
     assert _max_drawdown(returns) == 0.0
 
@@ -83,7 +83,7 @@ def test_max_drawdown_always_non_positive() -> None:
 # --- Calmar ratio ---
 
 def test_calmar_no_drawdown_returns_inf() -> None:
-    # no drawdown — Calmar undefined, return inf
+    # no drawdown - Calmar undefined, return inf
     returns = np.array([0.01, 0.02, 0.03])
     assert _calmar(returns) == float('inf')
 
@@ -100,7 +100,7 @@ def test_calmar_known_value() -> None:
 # --- Omega ratio ---
 
 def test_omega_no_losses_returns_inf() -> None:
-    # no losses — Omega undefined, return inf
+    # no losses - Omega undefined, return inf
     returns = np.array([0.01, 0.02, 0.03])
     assert _omega(returns) == float('inf')
 

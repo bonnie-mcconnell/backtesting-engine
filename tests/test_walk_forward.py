@@ -46,7 +46,7 @@ def test_correct_number_of_windows(
 ) -> None:
     # 504 days, train=252, test=252
     # window 1: rows 0-252 train, 252-504 test
-    # window 2: rows 252-504 train, 504-756 test — does not fit (504 < 756)
+    # window 2: rows 252-504 train, 504-756 test - does not fit (504 < 756)
     # so exactly 1 window should be produced
     result = walk_forward(
         trending_data, strategy,
@@ -70,7 +70,7 @@ def test_two_windows_with_sufficient_data(strategy: MovingAverageStrategy) -> No
 
 
 # ---------------------------------------------------------------------------
-# No look-ahead bias — test start always after train end
+# No look-ahead bias - test start always after train end
 # ---------------------------------------------------------------------------
 
 def test_no_lookahead_bias(
@@ -86,7 +86,7 @@ def test_no_lookahead_bias(
 
 
 # ---------------------------------------------------------------------------
-# Window advancement — each window advances by exactly test_days
+# Window advancement - each window advances by exactly test_days
 # ---------------------------------------------------------------------------
 
 def test_window_advances_by_test_days(strategy: MovingAverageStrategy) -> None:

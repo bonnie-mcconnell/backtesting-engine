@@ -3,7 +3,7 @@ Unit tests for the trade execution simulator.
 
 Tests use controlled synthetic data with known prices and signals so that
 all expected values can be computed by hand and hard-coded. No real market
-data is used — tests must be deterministic and independent of external state.
+data is used - tests must be deterministic and independent of external state.
 """
 import pandas as pd
 import numpy as np
@@ -117,11 +117,11 @@ def test_no_signals_portfolio_stays_flat(five_day_data: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Buy with no sell — position closed at end of window
+# Buy with no sell - position closed at end of window
 # ---------------------------------------------------------------------------
 
 def test_buy_no_sell_closes_at_window_end(five_day_data: pd.DataFrame) -> None:
-    # Buy on day 2, no sell signal — should close at last price (104.0) on last date
+    # Buy on day 2, no sell signal - should close at last price (104.0) on last date
     signals = pd.Series([0, 1, 0, 0, 0], index=five_day_data.index)
     result = run_simulation(five_day_data, signals)
     assert len(result.trades) == 1

@@ -39,13 +39,13 @@ def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
     """
     Estimate the p-value of the observed Sharpe ratio using block bootstrapping.
 
-    Simple return shuffling is invalid here because the Sharpe ratio is order-invariant —
+    Simple return shuffling is invalid here because the Sharpe ratio is order-invariant -
     shuffling an array leaves its mean and std unchanged, producing identical Sharpe ratios
     across all permutations. Block bootstrapping instead samples consecutive blocks of
     returns, preserving local autocorrelation structure while randomising the global
     sequence. This produces a genuine null distribution of Sharpe ratios.
 
-    Block size of sqrt(n) follows Politis & Romano (1994) — large enough to preserve
+    Block size of sqrt(n) follows Politis & Romano (1994) - large enough to preserve
     autocorrelation, small enough to provide meaningful randomisation.
 
     The p-value is the fraction of bootstrapped Sharpe ratios that meet or exceed the

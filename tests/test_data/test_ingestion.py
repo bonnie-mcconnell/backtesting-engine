@@ -1,142 +1,83 @@
 """
-Unit tests for the execution model.
+Unit tests for the data ingestion module.
 
-Tests cover slippage fills, signal delay, config validation,
-and backward compatibility with the original simulator.
+The network call to yfinance is mocked in all tests to keep the suite
+fast, deterministic, and free of external dependencies.
 """
 
-import numpy as np
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 
-from backtesting_engine.config import TRANSACTION_COST_RATE
-from backtesting_engine.execution import ExecutionConfig, run_simulation_with_execution
+from backtesting_engine.data.ingestion import load_data
 
 
-def _ohlcv(n: int = 5, base: float = 100.0) -> pd.DataFrame:
-    """Synthetic OHLCV with a 1-point intraday range per bar."""
-    dates = pd.date_range("2020-01-01", periods=n, freq="B")
-    close = np.linspace(base, base + n - 1, n)
+def _fake_download(ticker: str = "SPY") -> pd.DataFrame:
+    """
+    Minimal fake yfinance response with MultiIndex columns.
+
+    Mirrors the structure yfinance returns with auto_adjust=False:
+    columns are (field, ticker) tuples.
+    """
+    dates = pd.date_range("2020-01-01", periods=5, freq="B")
     return pd.DataFrame(
-        {"open": close - 0.2, "high": close + 0.5, "low": close - 0.5, "close": close},
+        {
+            ("Adj Close", ticker): [100.0, 101.0, 102.0, 103.0, 104.0],
+            ("High", ticker): [101.0, 102.0, 103.0, 104.0, 105.0],
+            ("Low", ticker): [99.0, 100.0, 101.0, 102.0, 103.0],
+            ("Volume", ticker): [1e6, 1e6, 1e6, 1e6, 1e6],
+        },
         index=dates,
     )
 
 
-def _close_only(n: int = 5, base: float = 100.0) -> pd.DataFrame:
-    dates = pd.date_range("2020-01-01", periods=n, freq="B")
-    return pd.DataFrame({"close": np.linspace(base, base + n - 1, n)}, index=dates)
+def test_load_data_returns_close_column() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert "close" in result.columns
 
 
-# ---------------------------------------------------------------------------
-# ExecutionConfig validation
-# ---------------------------------------------------------------------------
-
-class TestExecutionConfig:
-    def test_default_values(self) -> None:
-        ec = ExecutionConfig()
-        assert ec.transaction_cost_rate == TRANSACTION_COST_RATE
-        assert ec.slippage_factor == 0.0
-        assert ec.signal_delay == 0
-
-    def test_negative_cost_raises(self) -> None:
-        with pytest.raises(ValueError, match="non-negative"):
-            ExecutionConfig(transaction_cost_rate=-0.001)
-
-    def test_negative_slippage_raises(self) -> None:
-        with pytest.raises(ValueError, match="non-negative"):
-            ExecutionConfig(slippage_factor=-0.1)
-
-    def test_negative_delay_raises(self) -> None:
-        with pytest.raises(ValueError, match="non-negative"):
-            ExecutionConfig(signal_delay=-1)
-
-    def test_frozen_config(self) -> None:
-        ec = ExecutionConfig()
-        with pytest.raises(Exception):
-            ec.slippage_factor = 0.1  # type: ignore[misc]
+def test_load_data_returns_high_and_low_columns() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert "high" in result.columns
+    assert "low" in result.columns
 
 
-# ---------------------------------------------------------------------------
-# Slippage
-# ---------------------------------------------------------------------------
-
-class TestSlippage:
-    def test_zero_slippage_fills_at_close(self) -> None:
-        data = _ohlcv()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
-        assert result.trades[0].entry_price == data["close"].iloc[1]
-
-    def test_positive_slippage_raises_buy_price(self) -> None:
-        data = _ohlcv()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
-        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.2))
-        assert r_sl.trades[0].entry_price > r_no.trades[0].entry_price
-
-    def test_slippage_reduces_pnl(self) -> None:
-        data = _ohlcv()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
-        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.3))
-        assert r_sl.trades[0].pnl < r_no.trades[0].pnl
-
-    def test_slippage_requires_high_low_columns(self) -> None:
-        data = _close_only()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        with pytest.raises(ValueError, match="high.*low|low.*high"):
-            run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.1))
+def test_load_data_returns_datetime_index() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert isinstance(result.index, pd.DatetimeIndex)
 
 
-# ---------------------------------------------------------------------------
-# Signal delay
-# ---------------------------------------------------------------------------
-
-class TestSignalDelay:
-    def test_delay_zero_executes_on_signal_bar(self) -> None:
-        data = _close_only()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0))
-        assert result.trades[0].entry_price == data["close"].iloc[1]
-
-    def test_delay_one_shifts_execution_by_one_bar(self) -> None:
-        data = _close_only(n=7)
-        signals = pd.Series([0, 1, 0, 0, -1, 0, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1))
-        if result.trades:
-            # Buy signal on bar 1 → executes at bar 2's price
-            assert result.trades[0].entry_price == data["close"].iloc[2]
-
-    def test_delay_does_not_increase_trade_count(self) -> None:
-        data = _close_only(n=10)
-        signals = pd.Series([0, 1, 0, -1, 0, 1, 0, -1, 0, 0], index=data.index)
-        r0 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0))
-        r1 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1))
-        assert len(r1.trades) <= len(r0.trades)
+def test_load_data_close_values_match_adj_close() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert list(result["close"]) == [100.0, 101.0, 102.0, 103.0, 104.0]
 
 
-# ---------------------------------------------------------------------------
-# Backward compatibility with original simulator
-# ---------------------------------------------------------------------------
+def test_load_data_high_values_correct() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert list(result["high"]) == [101.0, 102.0, 103.0, 104.0, 105.0]
 
-class TestBackwardCompatibility:
-    def test_default_config_matches_original_simulator(self) -> None:
-        from backtesting_engine.simulator import run_simulation
 
-        data = _close_only()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
+def test_load_data_low_values_correct() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    assert list(result["low"]) == [99.0, 100.0, 101.0, 102.0, 103.0]
 
-        r_orig = run_simulation(data, signals)
-        r_new = run_simulation_with_execution(data, signals, ExecutionConfig())
 
-        assert len(r_orig.trades) == len(r_new.trades)
-        if r_orig.trades:
-            assert abs(r_orig.trades[0].pnl - r_new.trades[0].pnl) < 1e-6
+def test_load_data_raises_on_empty_response() -> None:
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=pd.DataFrame()):
+        with pytest.raises(ValueError, match="No data returned"):
+            load_data("INVALID", "2020-01-01")
 
-    def test_portfolio_always_positive(self) -> None:
-        data = _close_only()
-        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig())
-        assert result.portfolio_values is not None
-        assert (result.portfolio_values > 0).all()
+
+def test_load_data_output_passes_validation() -> None:
+    from backtesting_engine.data.validator import validate_data
+
+    with patch("backtesting_engine.data.ingestion.yf.download", return_value=_fake_download()):
+        result = load_data("SPY", "2020-01-01")
+    validate_data(result, min_rows=1)

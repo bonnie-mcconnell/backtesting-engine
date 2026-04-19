@@ -74,7 +74,7 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
 
     for idx, (date, signal) in enumerate(signals.items()):
         current_price = close_prices[idx]
-        date = pd.Timestamp(date)
+        date = pd.Timestamp(str(date))
 
         if shares_held == 0.0 and signal == 1:
             # --- Open long position ---
@@ -122,7 +122,7 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
         assert entry_price is not None and entry_date is not None
 
         final_price = close_prices[-1]
-        final_date = pd.Timestamp(signals.index[-1])
+        final_date = pd.Timestamp(str(signals.index[-1]))
 
         sell_proceeds = shares_held * final_price
         sell_cost = sell_proceeds * TRANSACTION_COST_RATE

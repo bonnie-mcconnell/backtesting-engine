@@ -3,15 +3,15 @@ Entry point for the backtesting engine.
 
 Runs three analyses and produces four output files:
 
-  1. Moving average crossover — walk-forward with Reality Check
+  1. Moving average crossover - walk-forward with Reality Check
      → dashboard_ma.html
 
-  2. Kalman filter trend following — walk-forward, MLE calibrated
+  2. Kalman filter trend following - walk-forward, MLE calibrated
      → dashboard_kalman.html
 
-  3. Strategy comparison table — side-by-side all metrics
+  3. Strategy comparison table - side-by-side all metrics
 
-  4. Cost sensitivity analysis — how Fisher p degrades as slippage and
+  4. Cost sensitivity analysis - how Fisher p degrades as slippage and
      transaction costs increase, identifying the breakeven execution cost
      → cost_sensitivity.html
 
@@ -123,7 +123,7 @@ def _print_results(result: BacktestResult) -> None:
     for w in result.window_results:
         window_str = f"{w.test_start.date()} → {w.test_end.date()}"
         if w.skipped:
-            print(f"  {window_str:<24}  [skipped — no trades generated]")
+            print(f"  {window_str:<24}  [skipped - no trades generated]")
             continue
 
         m = w.metrics_result
@@ -187,7 +187,7 @@ def _verdict(fisher_p: float, rc_p: float) -> None:
     else:
         print(
             f"  ✗  NOT SIGNIFICANT: Fisher p={fisher_p:.4f} ≥ {SIGNIFICANCE_THRESHOLD}.\n"
-            f"     Performance is consistent with noise — an honest result."
+            f"     Performance is consistent with noise - an honest result."
         )
 
 
@@ -202,7 +202,7 @@ def _print_comparison(ma: BacktestResult, kalman: BacktestResult) -> None:
 
     def wins(ma_v: float, ka_v: float, higher_is_better: bool = True) -> str:
         if math.isnan(ma_v) or math.isnan(ka_v):
-            return "—"
+            return "-"
         if higher_is_better:
             return "Kalman ✓" if ka_v > ma_v else ("MA ✓" if ma_v > ka_v else "Tie")
         return "Kalman ✓" if ka_v < ma_v else ("MA ✓" if ma_v < ka_v else "Tie")
@@ -238,8 +238,8 @@ def _run_cost_sensitivity(
     Sweep over (transaction_cost_rate, slippage_factor) grids and show how
     Fisher p-values degrade as execution costs increase.
 
-    Prints the breakeven cost for each strategy — the point at which
-    Fisher p crosses 0.05 — which is the most practically important
+    Prints the breakeven cost for each strategy - the point at which
+    Fisher p crosses 0.05 - which is the most practically important
     single number for deciding whether to pursue a strategy live.
     """
     cost_rates    = [0.0001, 0.0005, 0.001, 0.002, 0.005]
@@ -271,7 +271,7 @@ def _print_cost_table(
     cost_rates: list[float],
     slip_factors: list[float],
 ) -> None:
-    print(f"  {name} — Fisher p-value by (cost rate, slippage factor)")
+    print(f"  {name} - Fisher p-value by (cost rate, slippage factor)")
     print(f"  {'':>10}  " + "  ".join(f"slip={s:.3f}" for s in slip_factors))
     print("  " + "─" * 60)
     for cost in cost_rates:
@@ -297,7 +297,7 @@ def _save_cost_heatmap(
 
         fig = sp.make_subplots(
             rows=1, cols=2,
-            subplot_titles=["Moving Average — Fisher p", "Kalman Filter — Fisher p"],
+            subplot_titles=["Moving Average - Fisher p", "Kalman Filter - Fisher p"],
             horizontal_spacing=0.12,
         )
 
@@ -315,7 +315,7 @@ def _save_cost_heatmap(
                 colorscale="RdYlGn_r",
                 zmin=0, zmax=1,
                 colorbar=dict(title="Fisher p", x=1.0 if col == 2 else 0.45),
-                text=[[f"{v:.3f}" if not math.isnan(v) else "—" for v in row] for row in z],
+                text=[[f"{v:.3f}" if not math.isnan(v) else "-" for v in row] for row in z],
                 texttemplate="%{text}",
                 hovertemplate=(
                     "Cost rate: %{y}<br>Slippage: %{x}<br>"
@@ -333,7 +333,7 @@ def _save_cost_heatmap(
 
         fig.update_layout(
             title=dict(
-                text="Cost Sensitivity Analysis — Fisher p-value vs Execution Cost<br>"
+                text="Cost Sensitivity Analysis - Fisher p-value vs Execution Cost<br>"
                      f"<span style='font-size:12px;color:#94A3B8'>{sig_note}</span>",
                 x=0.5, font=dict(size=14, color="#F1F5F9"),
             ),

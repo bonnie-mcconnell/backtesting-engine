@@ -87,10 +87,10 @@ def white_reality_check(
         raise ValueError(
             f"candidate_returns must be 2D (T × k), got shape {candidate_returns.shape}."
         )
-    T, k = candidate_returns.shape
+    n_periods, k = candidate_returns.shape
     if k < 1:
         raise ValueError("Need at least one candidate strategy.")
-    if T < 2:
+    if n_periods < 2:
         raise ValueError("Need at least 2 time periods to bootstrap.")
 
     # Mean excess returns for each candidate.
@@ -101,14 +101,14 @@ def white_reality_check(
     observed_max = float(mean_returns.max())
 
     # Stationary bootstrap: variable block lengths drawn from Geometric(1/b).
-    b = max(1, int(np.sqrt(T)))
+    b = max(1, int(np.sqrt(n_periods)))
     rng = np.random.default_rng(seed)
     p = 1.0 / b   # geometric parameter
 
     count_exceeds = 0
     for _ in range(n_bootstrap):
         # Build a bootstrap resample of length T using stationary bootstrap.
-        resampled = _stationary_bootstrap_resample(candidate_returns, p, T, rng)
+        resampled = _stationary_bootstrap_resample(candidate_returns, p, n_periods, rng)
 
         # Bootstrap statistic: max mean return across candidates in this resample.
         boot_means = resampled.mean(axis=0)
@@ -131,7 +131,7 @@ def white_reality_check(
 def _stationary_bootstrap_resample(
     data: np.ndarray,
     p: float,
-    T: int,
+    n_periods: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
     """
@@ -150,20 +150,20 @@ def _stationary_bootstrap_resample(
     Returns:
         Resampled array of shape (T, k).
     """
-    k = data.shape[1]
+    data.shape[1]
     # Tile data twice so circular indexing never goes out of bounds.
-    circular = np.vstack([data, data])   # shape (2T, k)
+    circular = np.vstack([data, data])
 
-    indices = np.empty(T, dtype=np.intp)
+    indices = np.empty(n_periods, dtype=np.intp)
     pos = 0
-    while pos < T:
-        start = int(rng.integers(0, T))
+    while pos < n_periods:
+        start = int(rng.integers(0, n_periods))
         # Block length from Geometric(p): number of trials until first success.
         block_len = int(rng.geometric(p))
-        end = min(pos + block_len, T)
+        end = min(pos + block_len, n_periods)
         n = end - pos
         # Circular indexing: start + i wraps safely because we tiled twice.
-        indices[pos:end] = np.arange(start, start + n) % T
+        indices[pos:end] = np.arange(start, start + n) % n_periods
         pos = end
 
     return circular[indices, :]

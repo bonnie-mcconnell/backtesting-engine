@@ -223,10 +223,10 @@ class TestActiveParamsStorage:
                               training_window_years=1, testing_window_years=1)
         for w in result.valid_windows:
             s = w.active_params["short_window"]
-            l = w.active_params["long_window"]
-            assert isinstance(s, int) and isinstance(l, int)
-            assert s < l
-            assert s > 0 and l > 0
+            long_w = w.active_params["long_window"]
+            assert isinstance(s, int) and isinstance(long_w, int)
+            assert s < long_w
+            assert s > 0 and long_w > 0
 
     def test_param_evolution_property(
         self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy

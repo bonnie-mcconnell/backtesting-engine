@@ -1,18 +1,19 @@
 [project]
 name = "backtesting-engine"
-version = "0.2.0"
-description = "Walk-forward backtesting engine with Monte Carlo significance testing"
+version = "0.3.0"
+description = "Walk-forward backtesting with Kalman filter, White's Reality Check, and interactive dashboards"
 authors = [
     {name = "Bonnie McConnell", email = "bonniep.mcconnell@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "yfinance (>=1.2.0,<2.0.0)",
-    "pandas (>=3.0.1,<4.0.0)",
-    "numpy (>=2.4.3,<3.0.0)",
-    "scipy (>=1.15.0,<2.0.0)",
-    "matplotlib (>=3.10.0,<4.0.0)",
+    "yfinance (>=0.2.0,<2.0.0)",
+    "pandas (>=2.0.0,<4.0.0)",
+    "numpy (>=1.24.0,<3.0.0)",
+    "scipy (>=1.10.0,<2.0.0)",
+    "matplotlib (>=3.7.0,<4.0.0)",
+    "plotly (>=5.0.0,<6.0.0)",
 ]
 
 [tool.poetry]
@@ -25,6 +26,7 @@ backtesting-engine = "backtesting_engine.main:main"
 filterwarnings = [
     "ignore::RuntimeWarning:numpy",
     "ignore::DeprecationWarning:yfinance",
+    "ignore::FutureWarning",
 ]
 
 [tool.mypy]
@@ -46,7 +48,7 @@ build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [
-    "pytest (>=9.0.2,<10.0.0)",
-    "mypy (>=1.15.0,<2.0.0)",
-    "ruff (>=0.11.0,<1.0.0)",
+    "pytest (>=7.0.0,<11.0.0)",
+    "mypy (>=1.0.0,<2.0.0)",
+    "ruff (>=0.1.0,<1.0.0)",
 ]

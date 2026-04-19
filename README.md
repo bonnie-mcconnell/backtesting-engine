@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/bonnie-mcconnell/backtesting-engine/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen)
 
 A backtesting engine that goes beyond "did the strategy make money?" to answer "did the strategy have a genuine statistical edge, or did it just get lucky on this particular slice of history?"
 

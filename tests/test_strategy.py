@@ -143,3 +143,66 @@ class TestWarmupContext:
         n_with = (with_context != 0).sum()
         n_without = (without_context != 0).sum()
         assert n_with >= n_without
+
+
+# ---------------------------------------------------------------------------
+# candidate_test_returns - the Reality Check interface
+# ---------------------------------------------------------------------------
+
+class TestCandidateTestReturns:
+    def test_returns_dict_with_tuple_keys(self) -> None:
+        strategy = MovingAverageStrategy(short_window=20, long_window=50)
+        data = _oscillating_data(504)
+        train, test = data.iloc[:252], data.iloc[252:]
+        strategy.fit(train)
+        result = strategy.candidate_test_returns(test, context_data=train.iloc[-50:])
+        assert isinstance(result, dict)
+        assert all(isinstance(k, tuple) and len(k) == 2 for k in result.keys())
+
+    def test_all_candidates_are_evaluated_on_test_data(self) -> None:
+        # Every key in candidate_test_returns should also be in _all_candidate_pairs_
+        strategy = MovingAverageStrategy(short_window=20, long_window=50)
+        data = _oscillating_data(504)
+        train, test = data.iloc[:252], data.iloc[252:]
+        strategy.fit(train)
+        result = strategy.candidate_test_returns(test, context_data=train.iloc[-50:])
+        for key in result.keys():
+            assert key in strategy._all_candidate_pairs_
+
+    def test_returns_are_test_period_length(self) -> None:
+        strategy = MovingAverageStrategy(short_window=20, long_window=50)
+        data = _oscillating_data(504)
+        train, test = data.iloc[:252], data.iloc[252:]
+        strategy.fit(train)
+        result = strategy.candidate_test_returns(test)
+        for returns_series in result.values():
+            # Returns are one bar shorter than data due to differencing.
+            assert len(returns_series) == len(test) - 1
+
+    def test_returns_are_finite_floats(self) -> None:
+        strategy = MovingAverageStrategy(short_window=20, long_window=50)
+        data = _oscillating_data(504)
+        train, test = data.iloc[:252], data.iloc[252:]
+        strategy.fit(train)
+        result = strategy.candidate_test_returns(test)
+        import numpy as np
+        for returns_series in result.values():
+            assert np.all(np.isfinite(returns_series.to_numpy()))
+
+    def test_empty_before_fit(self) -> None:
+        # Before fit(), no candidates have been evaluated.
+        strategy = MovingAverageStrategy(short_window=20, long_window=50)
+        data = _oscillating_data(300)
+        test = data.iloc[150:]
+        result = strategy.candidate_test_returns(test)
+        assert result == {}
+
+    def test_base_strategy_default_returns_empty(self) -> None:
+        # KalmanFilterStrategy has no grid, so candidate_test_returns returns {}.
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+        strategy = KalmanFilterStrategy()
+        data = _oscillating_data(300)
+        train, test = data.iloc[:150], data.iloc[150:]
+        strategy.fit(train)
+        result = strategy.candidate_test_returns(test)
+        assert result == {}

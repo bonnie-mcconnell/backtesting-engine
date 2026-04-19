@@ -1,19 +1,18 @@
 """
-Unit tests for the data validator.
+Unit tests for data structural validation.
 
-Validates that validate_data raises correctly on malformed inputs and
-passes silently on well-formed inputs.
+validate_data raises ValueError on any structural problem and passes
+silently on well-formed data.
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from backtesting_engine.data.validator import validate_data
 
 
 def _valid_data(n: int = 10) -> pd.DataFrame:
-    """Minimal valid DataFrame: DatetimeIndex, positive 'close' column."""
     dates = pd.date_range("2020-01-01", periods=n, freq="B")
     return pd.DataFrame({"close": np.linspace(100.0, 110.0, n)}, index=dates)
 
@@ -69,7 +68,7 @@ class TestValidateData:
         with pytest.raises(ValueError, match="5 rows"):
             validate_data(data, min_rows=10)
 
-    def test_min_rows_default_passes_any_nonempty(self) -> None:
+    def test_min_rows_default_accepts_any_nonempty(self) -> None:
         validate_data(_valid_data(n=1))
 
     def test_empty_dataframe_raises(self) -> None:

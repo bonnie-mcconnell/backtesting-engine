@@ -23,10 +23,8 @@ Usage:
 """
 
 import math
-import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from backtesting_engine.config import (
@@ -34,8 +32,8 @@ from backtesting_engine.config import (
     MOVING_AVERAGE_LONG_DAYS,
     SIGNIFICANCE_THRESHOLD,
     START_DATE,
-    TICKER,
     TESTING_WINDOW_YEARS,
+    TICKER,
     TRAINING_WINDOW_YEARS,
 )
 from backtesting_engine.dashboard import build_dashboard
@@ -60,7 +58,7 @@ _DEFAULT_EXECUTION = ExecutionConfig(
 
 def main() -> None:
     print(f"\n{'═' * 70}")
-    print(f"  Backtesting Engine  ·  Walk-Forward  ·  Monte Carlo  ·  Reality Check")
+    print("  Backtesting Engine  ·  Walk-Forward  ·  Monte Carlo  ·  Reality Check")
     print(f"{'═' * 70}\n")
 
     data = _load(TICKER, START_DATE)
@@ -293,7 +291,7 @@ def _save_cost_heatmap(
     """Save interactive cost sensitivity heatmap as HTML."""
     try:
         import plotly.graph_objects as go  # type: ignore[import-untyped]
-        import plotly.subplots as sp       # type: ignore[import-untyped]
+        import plotly.subplots as sp  # type: ignore[import-untyped]
 
         fig = sp.make_subplots(
             rows=1, cols=2,

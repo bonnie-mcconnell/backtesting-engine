@@ -28,13 +28,13 @@ All panels share a unified dark theme and are linked where appropriate -
 clicking a window bar in panel 4 will be noted for future interactivity.
 """
 
-from pathlib import Path
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go  # type: ignore[import-untyped]
-import plotly.subplots as sp       # type: ignore[import-untyped]
+import plotly.subplots as sp  # type: ignore[import-untyped]
 
 from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
 from backtesting_engine.models import BacktestResult
@@ -330,7 +330,7 @@ def _add_drawdown(
         fill="tozeroy",
         name="Drawdown",
         line=dict(color=_DRAWDOWN, width=1),
-        fillcolor=f"rgba(239,68,68,0.25)",
+        fillcolor="rgba(239,68,68,0.25)",
         hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1%}<extra>Drawdown</extra>",
         showlegend=False,
     ), row=row, col=col)
@@ -500,7 +500,7 @@ def _add_param_evolution(
     elif "snr" in params_list[0]:
         # Kalman strategy: signal-to-noise ratio over time.
         snr_vals = [p.get("snr", float("nan")) for p in params_list]
-        ll_vals  = [p.get("log_likelihood", float("nan")) for p in params_list]
+        [p.get("log_likelihood", float("nan")) for p in params_list]
 
         fig.add_trace(go.Scatter(
             x=test_dates, y=snr_vals,

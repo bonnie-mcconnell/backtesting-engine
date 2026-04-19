@@ -184,7 +184,7 @@ class TestKalmanSignals:
         data = _trending_data(300)
         strategy.fit(data)
         signals = strategy.generate_signals(data)
-        assert np.issubdtype(signals.dtype, np.integer)
+        assert pd.api.types.is_integer_dtype(signals)
 
     def test_trending_data_produces_some_buy_signals(self) -> None:
         # Strong upward trend should produce at least one buy signal.

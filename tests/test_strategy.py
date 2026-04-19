@@ -71,7 +71,7 @@ class TestSignalGeneration:
         data = _oscillating_data(300)
         strategy = MovingAverageStrategy(short_window=10, long_window=30)
         signals = strategy.generate_signals(data)
-        assert signals.dtype == int or np.issubdtype(signals.dtype, np.integer)
+        assert pd.api.types.is_integer_dtype(signals)
 
     def test_invalid_params_raise(self) -> None:
         with pytest.raises(ValueError, match="less than"):

@@ -28,7 +28,7 @@ def _make_data(prices: list[float], start: str = "2015-01-01") -> pd.DataFrame:
 
 
 def _trending_data(n: int = 500) -> pd.DataFrame:
-    """Upward trend with moderate noise — calibration should converge."""
+    """Upward trend with moderate noise - calibration should converge."""
     rng = np.random.default_rng(42)
     dates = pd.date_range("2015-01-01", periods=n, freq="B")
     log_prices = np.cumsum(rng.normal(0.0005, 0.01, n))
@@ -220,7 +220,7 @@ class TestKalmanContext:
 
 
 # ---------------------------------------------------------------------------
-# active_params — parameter evolution storage
+# active_params - parameter evolution storage
 # ---------------------------------------------------------------------------
 
 class TestKalmanActiveParams:

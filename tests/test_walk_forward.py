@@ -200,3 +200,67 @@ class TestFisherCombinedP:
         p4 = _fisher_combined_p([0.1] * 4)
         p16 = _fisher_combined_p([0.1] * 16)
         assert p16 < p4
+
+
+# ---------------------------------------------------------------------------
+# active_params stored on WindowResult
+# ---------------------------------------------------------------------------
+
+class TestActiveParamsStorage:
+    def test_ma_windows_store_short_and_long(
+        self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(oscillating_504, strategy,
+                              training_window_years=1, testing_window_years=1)
+        for w in result.valid_windows:
+            assert "short_window" in w.active_params
+            assert "long_window" in w.active_params
+
+    def test_params_are_valid_window_sizes(
+        self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(oscillating_504, strategy,
+                              training_window_years=1, testing_window_years=1)
+        for w in result.valid_windows:
+            s = w.active_params["short_window"]
+            l = w.active_params["long_window"]
+            assert isinstance(s, int) and isinstance(l, int)
+            assert s < l
+            assert s > 0 and l > 0
+
+    def test_param_evolution_property(
+        self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(oscillating_504, strategy,
+                              training_window_years=1, testing_window_years=1)
+        evolution = result.param_evolution
+        assert len(evolution) == len(result.valid_windows)
+        for p in evolution:
+            assert "short_window" in p
+
+
+class TestRealityCheckWithTestReturns:
+    def test_rc_p_value_is_finite_for_ma_strategy(
+        self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(oscillating_504, strategy,
+                              training_window_years=1, testing_window_years=1)
+        import math
+        assert not math.isnan(result.summary_metrics.reality_check_p_value)
+
+    def test_rc_p_value_in_unit_interval(
+        self, oscillating_504: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(oscillating_504, strategy,
+                              training_window_years=1, testing_window_years=1)
+        p = result.summary_metrics.reality_check_p_value
+        assert 0.0 <= p <= 1.0
+
+    def test_rc_p_nan_for_kalman_strategy(
+        self, oscillating_504: pd.DataFrame
+    ) -> None:
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+        import math
+        result = walk_forward(oscillating_504, KalmanFilterStrategy(),
+                              training_window_years=1, testing_window_years=1)
+        assert math.isnan(result.summary_metrics.reality_check_p_value)

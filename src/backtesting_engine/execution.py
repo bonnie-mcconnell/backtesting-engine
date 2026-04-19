@@ -165,7 +165,7 @@ def run_simulation_with_execution(
     cost_rate = execution.transaction_cost_rate
 
     for idx, (date, signal) in enumerate(signals.items()):
-        date = pd.Timestamp(date)
+        date = pd.Timestamp(str(date))
         daily_range = high[idx] - low[idx]
 
         # Fill prices with slippage: buys fill above close, sells below.
@@ -214,7 +214,7 @@ def run_simulation_with_execution(
 
         trades.append(Trade(
             entry_date=entry_date,
-            exit_date=pd.Timestamp(signals.index[-1]),
+            exit_date=pd.Timestamp(str(signals.index[-1])),
             entry_price=entry_price,
             exit_price=sell_fill_final,
             shares=shares_held,

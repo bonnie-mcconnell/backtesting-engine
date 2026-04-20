@@ -16,7 +16,6 @@ callers to instrument the strategy. This is essential for two things:
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 
 import pandas as pd
 
@@ -76,7 +75,7 @@ class WindowResult:
 
     Attributes
     ----------
-    active_params : dict[str, Any]
+    active_params : dict[str, object]
         The calibrated parameters used for this window's test period.
         For MovingAverageStrategy: {'short_window': int, 'long_window': int}.
         For KalmanFilterStrategy: {'q': float, 'r': float, 'log_likelihood': float}.
@@ -91,7 +90,7 @@ class WindowResult:
     simulation_result: SimulationResult
     metrics_result: MetricsResult
     skipped: bool = False
-    active_params: dict[str, Any] = field(default_factory=dict)
+    active_params: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -113,7 +112,7 @@ class BacktestResult:
         return [w for w in self.window_results if not w.skipped]
 
     @property
-    def param_evolution(self) -> list[dict[str, Any]]:
+    def param_evolution(self) -> list[dict[str, object]]:
         """
         List of active_params dicts from each valid window, in time order.
 

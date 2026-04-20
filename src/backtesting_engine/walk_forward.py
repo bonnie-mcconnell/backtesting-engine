@@ -186,7 +186,7 @@ def _get_context(strategy: BaseStrategy, train_data: pd.DataFrame) -> pd.DataFra
     return train_data.iloc[-50:]
 
 
-def _extract_active_params(strategy: BaseStrategy) -> dict[str, Any]:
+def _extract_active_params(strategy: BaseStrategy) -> dict[str, object]:
     """
     Extract calibrated parameters from the strategy for WindowResult storage.
 
@@ -200,10 +200,9 @@ def _extract_active_params(strategy: BaseStrategy) -> dict[str, Any]:
         }
     if isinstance(strategy, KalmanFilterStrategy):
         return strategy.active_params()
-    # Generic: try duck-typed active_params() method.
-    if hasattr(strategy, "active_params") and callable(strategy.active_params):
-        return dict(strategy.active_params())
-    return {}
+    # Fallback: BaseStrategy.active_params() returns {} by default.
+    # Subclasses that store calibrated params override this method.
+    return strategy.active_params()
 
 
 # ---------------------------------------------------------------------------

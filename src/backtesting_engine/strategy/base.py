@@ -120,3 +120,17 @@ class BaseStrategy(ABC):
             on test_data. Empty dict means Reality Check is not applicable.
         """
         return {}
+
+    def active_params(self) -> "dict[str, object]":
+        """
+        Return calibrated parameters as a plain dict for WindowResult storage.
+
+        Default returns an empty dict. Strategies that calibrate parameters
+        during fit() should override this to return their active parameter values.
+        Called by walk_forward after fit() to record parameter evolution.
+
+        Returns:
+            Dict mapping parameter name to value. Empty dict for parameter-free
+            strategies. Example: {'short_window': 50, 'long_window': 200}.
+        """
+        return {}

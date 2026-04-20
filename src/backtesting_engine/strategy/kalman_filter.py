@@ -232,7 +232,7 @@ class KalmanFilterStrategy(BaseStrategy):
         all_signals = self.generate_signals(combined)
         return all_signals.loc[test_data.index]
 
-    def active_params(self) -> dict[str, float]:
+    def active_params(self) -> dict[str, object]:
         """
         Return calibrated parameters as a plain dict for WindowResult storage.
 

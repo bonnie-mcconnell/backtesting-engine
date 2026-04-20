@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import stats  # type: ignore[import-untyped]
+from scipy import stats
 
 from backtesting_engine.config import (
     ANNUALISATION_FACTOR,
@@ -201,8 +201,8 @@ def _extract_active_params(strategy: BaseStrategy) -> dict[str, Any]:
     if isinstance(strategy, KalmanFilterStrategy):
         return strategy.active_params()
     # Generic: try duck-typed active_params() method.
-    if hasattr(strategy, "active_params") and callable(strategy.active_params):  # type: ignore[arg-type]
-        return dict(strategy.active_params())  # type: ignore[call-arg]
+    if hasattr(strategy, "active_params") and callable(strategy.active_params):
+        return dict(strategy.active_params())
     return {}
 
 

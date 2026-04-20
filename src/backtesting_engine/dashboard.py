@@ -33,11 +33,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go  # type: ignore[import-untyped]
-import plotly.subplots as sp  # type: ignore[import-untyped]
+import plotly.graph_objects as go
+import plotly.subplots as sp
 
 from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
-from backtesting_engine.models import BacktestResult
+from backtesting_engine.models import BacktestResult, WindowResult
 
 # ---------------------------------------------------------------------------
 # Colour palette - dark, professional, unambiguous
@@ -241,7 +241,7 @@ def _drawdown(equity: pd.Series) -> pd.Series:
     return (equity - rolling_max) / rolling_max
 
 
-def _stitch_returns(valid_windows: list) -> np.ndarray:
+def _stitch_returns(valid_windows: list[WindowResult]) -> np.ndarray:
     arrays = []
     for w in valid_windows:
         pv = w.simulation_result.portfolio_values
@@ -272,7 +272,7 @@ def _add_equity_curve(
     fig: go.Figure,
     equity: pd.Series,
     benchmark: pd.Series,
-    valid_windows: list,
+    valid_windows: list[WindowResult],
     row: int, col: int,
 ) -> None:
     total_ret = (equity.iloc[-1] / equity.iloc[0] - 1) * 100
@@ -299,12 +299,12 @@ def _add_equity_curve(
                 x0=w.test_start, x1=w.test_end,
                 fillcolor=_STRATEGY, opacity=0.04,
                 layer="below", line_width=0,
-                row=row, col=col,  # type: ignore[call-arg]
+                row=row, col=col,  # pyright: ignore[reportArgumentType]
             )
 
     fig.update_yaxes(
         tickprefix="$", tickformat=",.0f",
-        title_text="Portfolio Value", row=row, col=col,
+        title_text="Portfolio Value", row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
     fig.update_xaxes(
         rangeselector=dict(
@@ -318,7 +318,7 @@ def _add_equity_curve(
             font=dict(color=_TEXT, size=10),
         ),
         rangeslider=dict(visible=True, thickness=0.04, bgcolor=_PANEL_BG),
-        row=row, col=col,
+        row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
 
 
@@ -344,7 +344,7 @@ def _add_drawdown(
         arrowcolor=_DRAWDOWN, font=dict(color=_DRAWDOWN, size=10),
         bgcolor=_PANEL_BG, bordercolor=_DRAWDOWN,
         ax=30, ay=-30,
-        row=row, col=col,
+        row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
     fig.update_yaxes(tickformat=".0%", title_text="Drawdown", row=row, col=col)
 
@@ -359,14 +359,14 @@ def _add_rolling_sharpe(
         hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra>Rolling Sharpe</extra>",
     ), row=row, col=col)
 
-    fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)  # type: ignore[call-arg]
-    fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,
-                  line_dash="dash", row=row, col=col)  # type: ignore[call-arg]
+    fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)  # pyright: ignore[reportArgumentType]
+    fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,  # pyright: ignore[reportArgumentType]
+                  line_dash="dash", row=row, col=col)
     fig.update_yaxes(title_text="Sharpe (63d)", row=row, col=col)
 
 
 def _add_window_sharpes(
-    fig: go.Figure, valid_windows: list, row: int, col: int
+    fig: go.Figure, valid_windows: list[WindowResult], row: int, col: int
 ) -> None:
     sharpes = [w.metrics_result.sharpe_ratio for w in valid_windows]
     labels = [f"{w.test_start.year}" for w in valid_windows]
@@ -391,14 +391,14 @@ def _add_window_sharpes(
     ), row=row, col=col)
 
     mean_sharpe = float(np.mean(sharpes))
-    fig.add_hline(  # type: ignore[call-arg]
+    fig.add_hline(
         y=mean_sharpe, line_color=_STRATEGY,
         line_width=1.5, line_dash="dash",
         annotation_text=f"Mean: {mean_sharpe:.2f}",
         annotation_font=dict(color=_STRATEGY, size=10),
-        row=row, col=col,
+        row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
-    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # type: ignore[call-arg]
+    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # pyright: ignore[reportArgumentType]
     fig.update_yaxes(title_text="Sharpe Ratio", row=row, col=col)
 
 
@@ -408,7 +408,7 @@ def _add_return_distribution(
     if len(returns) == 0:
         return
 
-    from scipy import stats as sp_stats  # type: ignore[import-untyped]
+    from scipy import stats as sp_stats
 
     n_bins = min(80, max(20, len(returns) // 10))
     fig.add_trace(go.Histogram(
@@ -442,7 +442,7 @@ def _add_return_distribution(
         font=dict(size=10, color=_MUTED),
         bgcolor=_PANEL_BG, bordercolor=_GRID,
         xanchor="right",
-        row=row, col=col,
+        row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
     fig.update_xaxes(tickformat=".1%", title_text="Daily Return", row=row, col=col)
     fig.update_yaxes(title_text="Density", row=row, col=col)
@@ -554,5 +554,5 @@ def _add_cumulative_benchmark(
         hovertemplate="%{x|%Y-%m-%d}<br>%{y:+.1f}%<extra>Buy & hold</extra>",
     ), row=row, col=col)
 
-    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # type: ignore[call-arg]
+    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # pyright: ignore[reportArgumentType]
     fig.update_yaxes(ticksuffix="%", title_text="Cumulative Return", row=row, col=col)

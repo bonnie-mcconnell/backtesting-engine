@@ -137,7 +137,7 @@ def _print_results(result: BacktestResult) -> None:
     _print_summary(result)
 
 
-def _format_params(params: dict) -> str:
+def _format_params(params: dict[str, object]) -> str:
     """Format active_params as a compact string for the results table."""
     if not params:
         return ""
@@ -265,7 +265,7 @@ def _run_cost_sensitivity(
 
 def _print_cost_table(
     name: str,
-    sweep: dict,
+    sweep: dict[tuple[float, float], float],
     cost_rates: list[float],
     slip_factors: list[float],
 ) -> None:
@@ -283,15 +283,15 @@ def _print_cost_table(
 
 
 def _save_cost_heatmap(
-    ma_sweep: dict,
-    kalman_sweep: dict,
+    ma_sweep: dict[tuple[float, float], float],
+    kalman_sweep: dict[tuple[float, float], float],
     cost_rates: list[float],
     slip_factors: list[float],
 ) -> None:
     """Save interactive cost sensitivity heatmap as HTML."""
     try:
-        import plotly.graph_objects as go  # type: ignore[import-untyped]
-        import plotly.subplots as sp  # type: ignore[import-untyped]
+        import plotly.graph_objects as go
+        import plotly.subplots as sp
 
         fig = sp.make_subplots(
             rows=1, cols=2,

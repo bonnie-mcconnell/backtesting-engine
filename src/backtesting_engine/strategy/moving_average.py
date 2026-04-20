@@ -218,7 +218,8 @@ class MovingAverageStrategy(BaseStrategy):
             position[i] = held
 
         price_returns = np.diff(close) / close[:-1]
-        return position[:-1] * price_returns
+        result: np.ndarray = position[:-1] * price_returns
+        return result
 
     @staticmethod
     def _sharpe_of_returns(returns: np.ndarray) -> float:

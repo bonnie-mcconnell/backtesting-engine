@@ -79,7 +79,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize  # type: ignore[import-untyped]
+from scipy.optimize import minimize
 
 from backtesting_engine.strategy.base import BaseStrategy
 

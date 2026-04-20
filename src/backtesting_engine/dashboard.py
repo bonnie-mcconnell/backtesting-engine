@@ -359,7 +359,7 @@ def _add_rolling_sharpe(
         hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra>Rolling Sharpe</extra>",
     ), row=row, col=col)
 
-    fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)
+    fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)  # type: ignore[call-arg]
     fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,
                   line_dash="dash", row=row, col=col)
     fig.update_yaxes(title_text="Sharpe (63d)", row=row, col=col)
@@ -398,7 +398,7 @@ def _add_window_sharpes(
         annotation_font=dict(color=_STRATEGY, size=10),
         row=row, col=col,
     )
-    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)
+    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # type: ignore[call-arg]
     fig.update_yaxes(title_text="Sharpe Ratio", row=row, col=col)
 
 
@@ -554,5 +554,5 @@ def _add_cumulative_benchmark(
         hovertemplate="%{x|%Y-%m-%d}<br>%{y:+.1f}%<extra>Buy & hold</extra>",
     ), row=row, col=col)
 
-    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)
+    fig.add_hline(y=0, line_color=_GRID, line_width=0.8, row=row, col=col)  # type: ignore[call-arg]
     fig.update_yaxes(ticksuffix="%", title_text="Cumulative Return", row=row, col=col)

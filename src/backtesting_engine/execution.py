@@ -43,6 +43,7 @@ without touching config.py.
 """
 
 from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -268,10 +269,9 @@ def cost_sensitivity_sweep(
         Dict mapping (cost_rate, slippage_factor) → Fisher p-value.
     """
     from backtesting_engine.walk_forward import walk_forward  # avoid circular import
-    from backtesting_engine.strategy.base import BaseStrategy  # avoid circular import
 
     results: dict[tuple[float, float], float] = {}
-    total = len(cost_rates) * len(slippage_factors)
+    len(cost_rates) * len(slippage_factors)
     done = 0
 
     for cost in cost_rates:

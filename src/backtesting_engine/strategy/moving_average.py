@@ -25,7 +25,6 @@ distribution.
 import numpy as np
 import pandas as pd
 
-from backtesting_engine.strategy.base import BaseStrategy
 from backtesting_engine.config import (
     ANNUALISATION_FACTOR,
     MA_LONG_RANGE,
@@ -35,6 +34,7 @@ from backtesting_engine.config import (
     MOVING_AVERAGE_SHORT_DAYS,
     RISK_FREE_RATE,
 )
+from backtesting_engine.strategy.base import BaseStrategy
 
 
 class MovingAverageStrategy(BaseStrategy):

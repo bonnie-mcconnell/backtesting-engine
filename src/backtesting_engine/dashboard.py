@@ -361,7 +361,7 @@ def _add_rolling_sharpe(
 
     fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)  # type: ignore[call-arg]
     fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,
-                  line_dash="dash", row=row, col=col)
+                  line_dash="dash", row=row, col=col)  # type: ignore[call-arg]
     fig.update_yaxes(title_text="Sharpe (63d)", row=row, col=col)
 
 
@@ -391,7 +391,7 @@ def _add_window_sharpes(
     ), row=row, col=col)
 
     mean_sharpe = float(np.mean(sharpes))
-    fig.add_hline(
+    fig.add_hline(  # type: ignore[call-arg]
         y=mean_sharpe, line_color=_STRATEGY,
         line_width=1.5, line_dash="dash",
         annotation_text=f"Mean: {mean_sharpe:.2f}",

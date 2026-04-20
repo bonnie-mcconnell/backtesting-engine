@@ -40,6 +40,7 @@ Strategies that perform a parameter search during fit() should also expose:
 
 from abc import ABC, abstractmethod
 from typing import Any
+
 import pandas as pd
 
 

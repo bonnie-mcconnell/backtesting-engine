@@ -76,12 +76,12 @@ Durbin, J. & Koopman, S.J. (2012). Time Series Analysis by State Space
 """
 
 import warnings
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize  # type: ignore[import-untyped]
 
 from backtesting_engine.strategy.base import BaseStrategy
-
 
 # Numerical floor for variances - prevents degenerate filters where Q or R
 # collapse to zero and the Kalman gain becomes undefined.

@@ -9,6 +9,7 @@ Test naming convention: test_<function>_<scenario>_<expected_behaviour>
 """
 
 import math
+
 import numpy as np
 import pytest
 
@@ -21,7 +22,6 @@ from backtesting_engine.metrics import (
     _sortino,
     calculate_metrics,
 )
-
 
 # ---------------------------------------------------------------------------
 # _sharpe
@@ -210,6 +210,7 @@ class TestMonteCarloPValue:
 class TestCalculateMetrics:
     def test_returns_metricsresult_with_all_fields(self) -> None:
         import pandas as pd
+
         from backtesting_engine.models import MetricsResult
 
         dates = pd.date_range("2020-01-01", periods=100, freq="B")

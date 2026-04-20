@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtesting_engine.walk_forward import walk_forward, _fisher_combined_p
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.walk_forward import _fisher_combined_p, walk_forward
 
 
 def _oscillating_data(n: int, start: str = "2010-01-01") -> pd.DataFrame:
@@ -259,8 +259,9 @@ class TestRealityCheckWithTestReturns:
     def test_rc_p_nan_for_kalman_strategy(
         self, oscillating_504: pd.DataFrame
     ) -> None:
-        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
         import math
+
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
         result = walk_forward(oscillating_504, KalmanFilterStrategy(),
                               training_window_years=1, testing_window_years=1)
         assert math.isnan(result.summary_metrics.reality_check_p_value)

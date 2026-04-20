@@ -9,8 +9,8 @@ Test philosophy: each test asserts exactly one thing. This makes failures
 diagnostic rather than just indicative that something is wrong somewhere.
 """
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from backtesting_engine.config import (
@@ -19,7 +19,6 @@ from backtesting_engine.config import (
     TRANSACTION_COST_RATE,
 )
 from backtesting_engine.simulator import run_simulation
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

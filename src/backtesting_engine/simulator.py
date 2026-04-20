@@ -18,7 +18,6 @@ For daily data over a single asset across decades, the performance is fine.
 """
 
 import pandas as pd
-import numpy as np
 
 from backtesting_engine.config import (
     INITIAL_PORTFOLIO_VALUE,

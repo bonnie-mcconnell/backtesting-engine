@@ -360,8 +360,8 @@ def _add_rolling_sharpe(
     ), row=row, col=col)
 
     fig.add_hline(y=0, line_color=_GRID, line_width=1, row=row, col=col)  # pyright: ignore[reportArgumentType]
-    fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,  # pyright: ignore[reportArgumentType]
-                  line_dash="dash", row=row, col=col)
+    fig.add_hline(y=1, line_color=_POSITIVE, line_width=0.8,
+                  line_dash="dash", row=row, col=col)  # pyright: ignore[reportArgumentType]
     fig.update_yaxes(title_text="Sharpe (63d)", row=row, col=col)
 
 

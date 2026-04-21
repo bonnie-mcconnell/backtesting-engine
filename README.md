@@ -6,7 +6,7 @@
 
 A backtesting engine that goes beyond "did the strategy make money?" to answer "did the strategy have a genuine statistical edge, or did it just get lucky on this particular slice of history?"
 
-Two strategies. Four layers of significance testing. Realistic execution. Interactive dashboards showing parameter evolution across market regimes.
+Includes: Two strategies, four layers of significance testing, realistic execution, interactive dashboards showing parameter evolution across market regimes.
 
 ---
 

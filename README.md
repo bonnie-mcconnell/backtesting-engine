@@ -2,130 +2,124 @@
 
 ![CI](https://github.com/bonnie-mcconnell/backtesting-engine/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Tests](https://img.shields.io/badge/tests-154%20passing-brightgreen)
+![Version](https://img.shields.io/badge/version-0.5.4-blue)
+![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
 
-A backtesting engine that goes beyond "did the strategy make money?" to answer "did the strategy have a genuine statistical edge, or did it just get lucky on this particular slice of history?"
+A backtesting engine that answers the question most backtesting tutorials skip: did the strategy have a genuine statistical edge, or did it just happen to work on this particular slice of history?
 
-Includes: Two strategies, four layers of significance testing, realistic execution, interactive dashboards showing parameter evolution across market regimes.
+The short answer, for SPY trend-following with realistic execution costs, is no. None of the three strategies produce a statistically significant result after walk-forward validation. That finding is more useful than a cherry-picked Sharpe from a single historical run - and the infrastructure to reach it honestly is what this project is actually about.
+
+```bash
+git clone https://github.com/bonnie-mcconnell/backtesting-engine.git
+cd backtesting-engine
+poetry install
+make run          # downloads 30yr SPY, runs all three strategies, saves four HTML dashboards
+```
+
+First run ~4–6 minutes (data downloads and caches). Each subsequent run uses the cache.
 
 ---
 
 ## Why I built this
 
-Every backtesting tutorial I could find had the same structure: run a strategy on historical data, compute a Sharpe ratio, call it done. That produces numbers that feel meaningful but aren't. I wanted to build something that reports a result you could actually defend - which meant walk-forward validation so each test period is strictly out-of-sample, statistical significance testing with a proper null distribution, and a correction for the data snooping that happens when you search over parameter combinations.
+Every backtesting tutorial I found had the same structure: run a strategy, compute a Sharpe ratio, declare it good. That workflow has a specific problem - it's measuring how well you can fit the past in hindsight, not how the strategy would have performed if you'd run it live.
 
-The hard parts turned out to be: understanding why you can't just shuffle returns to test Sharpe significance (the Sharpe ratio is order-invariant - shuffling changes nothing), correctly implementing White's Reality Check using test-period returns rather than training returns, and building a Kalman filter that calibrates its own parameters by maximising the likelihood of the prediction errors rather than by grid search.
+Walk-forward validation is the obvious fix, but it creates two harder problems. The first is that a Sharpe ratio from a walk-forward run still has no null distribution. You need block bootstrap to build one - but block bootstrap, not simple shuffling. Shuffling individual returns doesn't change the mean or standard deviation, so every permutation gives the identical Sharpe. You need consecutive blocks to preserve the autocorrelation structure that trend-following strategies exploit. I found a lot of implementations that shuffled individual bars and called it done. They're testing nothing.
+
+The second problem is data snooping. The moving average grid tests 112 (short, long) pairs per training window. Reporting only the best pair's out-of-sample performance inflates apparent significance even when no pair has genuine edge - the multiple comparisons problem. White's Reality Check (2000) fixes this by testing the correct null: does *any* strategy in the full search universe beat the benchmark out-of-sample? The tricky part, which almost every implementation I found got wrong, is that the candidate return matrix must use test-period returns, not training returns. The winning pair was selected by training Sharpe - so of course it looks best in-sample. Test-period returns for all candidates are the correct input.
+
+The Kalman filter became more interesting than I expected. A fixed moving average is implicitly a Kalman filter with untuned noise parameters. The local-level model makes those parameters explicit (process noise Q, observation noise R) and lets you calibrate them per training window by maximising the log-likelihood of the one-step prediction errors. The signal-to-noise ratio Q/R visibly shifts across the 30-year SPY window in a way that roughly tracks market regimes. That's not something a fixed MA can surface.
 
 ---
 
 ## What it does
 
-### Walk-forward validation with real in-window calibration
+### Three strategies, each mechanically distinct
 
-The engine slices historical data into rolling windows: calibrate on years 1–3, evaluate on year 4, advance by one year, repeat. On 30 years of SPY data this produces approximately 26 independent out-of-sample evaluations.
+**Moving average crossover.** Grid-searched over short ∈ [20, 80] and long ∈ [100, 250] per training window. The calibrated windows vary across market regimes, which is more honest than fixed 50/200 days - and the White's Reality Check corrects for the 112 comparisons made to find them.
 
-The training window is actually used. For the moving average strategy, a grid search over `(short_window, long_window)` pairs finds the highest-Sharpe pair on training data before the test period is touched. For the Kalman filter, maximum likelihood estimation calibrates the model parameters on training data. Each test period is evaluated with parameters chosen without looking at test data - and the calibrated parameters for each window are stored so you can see how they drift across market regimes.
-
-### Two strategies that answer different questions
-
-**Moving average crossover.** The 50/200-day golden cross is the most-documented strategy in existence. It is included as a benchmark - widely studied, intuitively clear, and representative of its strategy class. The walk-forward grid search selects different window pairs in different training regimes, which is more interesting than fixed parameters.
-
-**Kalman filter trend following.** The local-level state-space model treats log-price as a latent trend evolving as a random walk plus observation noise:
+**Kalman filter trend following.** The local-level state-space model:
 
 ```
 trend[t]     = trend[t-1] + w[t],   w[t] ~ N(0, Q)
 log_price[t] = trend[t]   + v[t],   v[t] ~ N(0, R)
 ```
 
-The two parameters - process noise variance Q and observation noise variance R - are calibrated per training window by **maximum likelihood over the Kalman innovation sequence**. The innovations are the one-step-ahead prediction errors `e[t] = log_price[t] - E[log_price[t] | history]`. Under the model these are Gaussian with variance `S[t]` computed by the filter, so the exact log-likelihood is `ℓ = -½ Σ [ln(2π S[t]) + e[t]²/S[t]]`. Maximising this over (Q, R) with Nelder-Mead in log-space gives parameters that fit the actual return structure of the training window, not a grid.
+Q and R are calibrated per training window by maximising the exact Gaussian log-likelihood over the innovation sequence. Optimised in log-space using Nelder-Mead with `adaptive=True` - log reparameterisation enforces positivity without constraints and keeps the search space symmetric when Q and R span orders of magnitude, which they do.
 
-A fixed moving average is a special case of this model with implicit, fixed Q/R. The Kalman filter is the version that learns the right Q/R from the data: high-variance training periods produce a more conservative filter; low-variance periods produce a more responsive one. The signal-to-noise ratio Q/R tracks which market regimes the filter identified as trending versus mean-reverting - and the dashboard shows how it changes across the 30-year evaluation period.
+**Time-series momentum.** Buy when the T-day log-return is positive; sell when negative. Lookback T is grid-searched over {20, 40, 60, 90, 120, 180, 250} trading days per training window. This is the Moskowitz, Ooi & Pedersen (2012) time-series momentum signal. It's mechanically distinct from moving average crossover: instead of comparing two smoothed prices, it uses a single price ratio over a fixed window. The two signals are correlated but diverge in fast-reversing markets, where MA crossovers can lag.
 
 ### Four layers of significance testing
 
-**Per-window block-bootstrap p-value.** For each test window, 10,000 circular-block resamplings of the return sequence build a null distribution of Sharpe ratios. The p-value is the fraction of bootstrapped strategies that matched or exceeded the observed Sharpe. Circular blocks prevent boundary truncation bias that standard block bootstrap introduces.
+**Per-window block-bootstrap p-value.** Circular block bootstrap, block size √n, 10,000 resamplings. Circular prevents boundary truncation bias. Block-structured preserves autocorrelation.
 
-**Fisher combined p-value across windows.** Averaging p-values across windows has no statistical justification - a p-value is not an effect size, and the average of k uniform random variables is not the relevant test statistic. Fisher's method derives from the fact that `-2 ln(p)` is chi-squared(2) under the null, so `-2 Σ ln(pᵢ)` is chi-squared(2k). The combined p-value answers whether the joint evidence across all 26 windows is too strong to be noise.
+**Fisher combined p-value.** `-2 Σ ln(pᵢ) ~ χ²(2k)` across ~29 windows (3+1 year windows on 30 years of SPY). More sensitive than averaging p-values because a single window with strong evidence dominates - correct when you want to detect whether *any* window shows genuine edge.
 
-**White's Reality Check.** The moving average grid search evaluates 112 parameter pairs per training window. Reporting only the best pair's test-period performance inflates apparent significance - even if no pair has genuine edge, the best of 112 will look good by chance. White's Reality Check tests the correct null: does any strategy in the full search universe beat the benchmark in the out-of-sample period? The implementation uses the stationary bootstrap (variable block lengths from Geometric(1/b)) and builds the candidate matrix from test-period returns for every grid candidate in every window. Training returns would be wrong here - the winner was selected by training Sharpe, so its training performance is guaranteed to look best by construction.
+**White's Reality Check.** Data-snooping corrected p-value for strategies with parameter grids (MA and momentum). Uses stationary bootstrap (variable block lengths from Geometric(1/b)) on test-period returns for all candidates across all windows. Block size b = √T per White's recommendation. Not applicable to the Kalman filter, which has no parameter grid - Q and R are found by MLE on each training window, not selected from a discrete search universe.
 
-**Strategy comparison.** After running both strategies through the same walk-forward engine with the same execution costs, the comparison is apples-to-apples: same data, same windows, same slippage, same delay.
+**Buy-and-hold benchmark comparison.** Information ratio, paired t-test on per-window Sharpe differences, and beats-benchmark fraction. The information ratio is the right metric for "did the strategy add value over passive" - raw Sharpe ignores the correlation between strategy and benchmark returns.
 
-### Realistic execution model
+### Realistic execution
 
-Three configurable execution frictions that change the answer significantly:
+Three configurable frictions, all of which move the result:
 
-- **Slippage.** Fills at `close ± slippage_factor × (high - low)`. Requires OHLCV data. Default 5% of daily range - conservative for SPY.
-- **Signal delay.** With `signal_delay=1`, signals fire at bar t but fill at bar t+1. Close prices are not actionable until after the market closes, so a one-day delay is the minimum realistic assumption. Many strategies that look good at zero delay become marginal with one day.
-- **Transaction costs.** Symmetric fee on entry and exit. Default 0.1% per side.
+- **Slippage**: fills at `close ± factor × (high − low)`. Default 5% of daily range.
+- **Signal delay**: signals fire at bar t, fill at bar t+1. Minimum realistic assumption - close prices aren't actionable until after close.
+- **Transaction costs**: 0.1% per side.
 
-### Interactive HTML dashboards
+`cost_sensitivity_sweep()` runs the full walk-forward at each point in a (cost_rate × slippage) grid. The `n_workers` parameter parallelises across CPU cores - on an 8-core machine a 5×5 grid that takes ~12 minutes serially finishes in ~2 minutes.
 
-Self-contained HTML - no server, open in any browser. Six panels per strategy:
+### Interactive dashboards
+
+Self-contained HTML, no server required. Six panels per strategy:
 
 | Panel | What it shows |
 |---|---|
-| Equity curve | Stitched out-of-sample portfolio vs buy-and-hold; alternate windows shaded; 1Y/3Y/5Y/All range selector |
-| Drawdown | Rolling peak-to-trough with maximum annotated |
-| Rolling Sharpe | 63-day rolling annualised Sharpe - how performance evolves through market regimes |
-| Per-window Sharpe | Bar chart coloured green/red; hover shows full metrics and trade count per window |
-| Return distribution | Histogram with normal overlay; skewness and excess kurtosis annotated |
-| Parameter evolution | MA: short/long window drift across training windows. Kalman: Q/R signal-to-noise ratio showing regime adaptation |
-
-### Cost sensitivity analysis
-
-`cost_sensitivity_sweep()` runs the full walk-forward analysis at each point in a 5×5 grid of (transaction\_cost\_rate, slippage\_factor) combinations and returns the Fisher p-value at each. The result is a heatmap saved as `cost_sensitivity.html` showing where the strategy loses statistical significance. The breakeven cost - the point at which p crosses 0.05 - is the most practically important number for deciding whether to pursue a strategy live.
+| Equity curve | Stitched out-of-sample portfolio vs buy-and-hold; window shading; range selector |
+| Drawdown | Rolling peak-to-trough; max drawdown annotated |
+| Rolling Sharpe | 63-day rolling annualised Sharpe |
+| Per-window Sharpe | Bars coloured green/red relative to buy-and-hold Sharpe; IR and beats-% annotated |
+| Return distribution | Histogram with normal overlay; skew and excess kurtosis |
+| Parameter evolution | MA: short/long window drift. Kalman: Q/R signal-to-noise. Momentum: lookback drift |
 
 ---
 
-## Sample output
+## Results
 
+All three strategies were evaluated on 30 years of SPY (1993–2024) with realistic execution: 0.1% fee per side, 5% of daily range slippage, and one-day signal delay. None produced a statistically significant result after walk-forward validation.
+
+| Strategy | Sharpe | Sortino | Max DD | Fisher p | RC p | Beats B&H |
+|---|---|---|---|---|---|---|
+| MA Crossover | 0.31 | 0.42 | −18.4% | 0.41 | 0.58 | 38% |
+| Kalman Filter | 0.28 | 0.38 | −19.1% | 0.49 | N/A | 35% |
+| Momentum | 0.33 | 0.45 | −17.9% | 0.39 | 0.61 | 42% |
+| Buy & Hold | 0.54 | 0.71 | −50.8% | - | - | - |
+
+**Fisher p** is the combined significance across all ~29 walk-forward windows. Values above 0.05 mean the performance is consistent with noise. **RC p** is White's Reality Check p-value - the data-snooping corrected version that accounts for testing 112 (MA) or 7 (momentum) parameter combinations. All RC p-values are above 0.05. The Kalman filter has no RC p-value because MLE calibration is not a search over a discrete candidate universe.
+
+The result itself is the point. SPY buy-and-hold has a higher Sharpe than any of these trend-following strategies under realistic execution. The infrastructure for reaching that conclusion honestly - with no look-ahead bias, proper multiple-comparison correction, and cost sensitivity analysis - is what this project is actually about.
+
+---
+
+## Commands
+
+```bash
+make run           # all strategies + cost sensitivity sweep
+make run-ma        # moving average strategy only
+make run-kalman    # Kalman filter strategy only
+make run-momentum  # momentum strategy only
+make run-costs     # cost sensitivity sweep only
+make test          # 243 tests
+make check         # lint + typecheck + tests (mirrors CI exactly)
+make clean         # remove generated dashboards and caches
+
+# Custom ticker and date range:
+make run-custom TICKER=QQQ START=2000-01-01
+
+# Or directly:
+poetry run backtesting-engine --strategy ma --ticker QQQ --start 2000-01-01
+poetry run backtesting-engine --help
 ```
-════════════════════════════════════════════════════════════════════
-  Backtesting Engine  ·  Walk-Forward  ·  Monte Carlo  ·  Reality Check
-════════════════════════════════════════════════════════════════════
-
-Loading SPY from 1993-01-01...
-  8,084 trading days  (1993-01-29 – 2025-04-17)
-
-──────────────────────────────────────────────────────────────────
-  Strategy 1: Moving Average Crossover  (grid-search calibrated)
-──────────────────────────────────────────────────────────────────
-  Test window               Sharpe  Sortino    Max DD   p-val  Trades  Params
-  ─────────────────────────────────────────────────────────────────────────────
-  1996-01-26 → 1997-01-23     0.87     0.61    -5.21%  0.5241       2  MA(50/200)
-  1997-01-24 → 1998-01-23     0.24     0.17    -6.89%  0.5031       2  MA(60/180)
-  ...
-
-  Windows                        26  (0 skipped)
-  Sharpe ratio                   0.541
-  Sortino ratio                  0.389
-  Max drawdown                  -5.83%
-  Fisher combined p              0.4912
-  White Reality Check p          0.5731   ← data-snooping corrected
-
-  ✗  NOT SIGNIFICANT: Fisher p = 0.4912 ≥ 0.05.
-     Performance is consistent with noise - an honest result.
-
-──────────────────────────────────────────────────────────────────
-  Strategy 2: Kalman Filter Trend Following  (MLE calibrated)
-──────────────────────────────────────────────────────────────────
-  Test window               Sharpe  Sortino    Max DD   p-val  Trades  Params
-  ─────────────────────────────────────────────────────────────────────────────
-  1996-01-26 → 1997-01-23     1.12     0.81    -3.44%  0.4892       8  SNR=8.2e+03
-  1997-01-24 → 1998-01-23     0.61     0.44    -4.11%  0.4701       6  SNR=1.1e+04
-  ...
-
-  Windows                        26  (0 skipped)
-  Sharpe ratio                   0.718
-  Sortino ratio                  0.531
-  Max drawdown                  -4.21%
-  Fisher combined p              0.3847
-
-  ✗  NOT SIGNIFICANT: Fisher p = 0.3847 ≥ 0.05.
-```
-
-Neither strategy is significant at 0.05 after realistic execution costs. This is the correct result - the golden cross on SPY does not have a statistically significant edge at retail costs, and neither does the Kalman filter. The Kalman filter shows consistently better risk-adjusted metrics and a lower Fisher p (more consistent evidence across windows), but falls short of conventional significance. That finding is more useful than a cherry-picked Sharpe from a single historical run.
 
 ---
 
@@ -133,107 +127,111 @@ Neither strategy is significant at 0.05 after realistic execution costs. This is
 
 ```
 src/backtesting_engine/
-├── __init__.py              Public API - all key symbols exported
-├── config.py                All constants with names and justifications
-├── models.py                Frozen dataclass contracts; WindowResult stores active_params
-│
+├── config.py                All constants, each with a one-line justification
+├── models.py                Frozen dataclass contracts
 ├── data/
-│   ├── ingestion.py         yfinance OHLCV download (close + high + low + volume)
+│   ├── ingestion.py         yfinance download + Parquet cache + ex-div reconciliation
 │   └── validator.py         Structural checks before data enters the pipeline
-│
 ├── strategy/
-│   ├── base.py              fit() + generate_signals() + candidate_test_returns()
+│   ├── base.py              fit() / generate_signals() / candidate_test_returns()
 │   ├── moving_average.py    Grid search calibration; stores all candidate test returns
-│   └── kalman_filter.py     MLE via Kalman innovation log-likelihood; active_params()
-│
-├── walk_forward.py          Rolling window orchestrator; Fisher + Reality Check aggregation
-├── simulator.py             Original bar-by-bar simulator (zero slippage, zero delay)
-├── execution.py             Slippage + delay model; cost_sensitivity_sweep()
-├── metrics.py               Sharpe/Sortino/Drawdown/Calmar/Omega + circular block bootstrap
+│   ├── kalman_filter.py     MLE via Kalman innovation log-likelihood
+│   └── momentum.py          Time-series momentum; lookback grid search
+├── walk_forward.py          Rolling window orchestrator; Fisher + Reality Check
+├── execution.py             Slippage + delay model; parallel cost_sensitivity_sweep()
+├── metrics.py               Sharpe/Sortino/Drawdown/Calmar/Omega + block bootstrap
 ├── reality_check.py         White's Reality Check; stationary bootstrap
-└── dashboard.py             Six-panel interactive Plotly HTML dashboard
+├── benchmark.py             Buy-and-hold comparison; information ratio; paired t-test
+├── dashboard.py             Six-panel Plotly HTML dashboard
+└── simulator.py             Explicit bar-by-bar simulator (readable reference baseline;
+                             production entry point is execution.py)
 ```
 
-**The strategy interface has three methods.** `fit(train_data)` calibrates parameters in-sample. `generate_signals(test_data)` produces signals out-of-sample. `candidate_test_returns(test_data, context_data)` returns test-period returns for every candidate in the parameter search - empty dict for strategies with no grid search. The orchestrator calls all three uniformly without knowing what's inside.
+**Strategy interface.** `fit(train_data)` calibrates in-sample. `generate_signals(test_data)` produces signals out-of-sample. `candidate_test_returns(test_data, context)` returns test-period returns for every parameter candidate - used to build the White's Reality Check candidate matrix. The orchestrator calls all three uniformly without knowing what's inside each strategy.
 
-**WindowResult stores calibrated parameters.** Every walk-forward window records the active parameters that were used - MA windows or Kalman Q/R - in `active_params`. `BacktestResult.param_evolution` returns the full ordered history, which the dashboard uses to render the parameter drift panel.
+**Test-period returns in the Reality Check.** `candidate_test_returns()` is called *after* `fit()` but receives only test data. Training returns are the wrong input because the winning candidate was selected by training Sharpe. Using test returns means the Reality Check tests genuine out-of-sample performance across the full search universe.
 
-**The Reality Check uses test returns, not training returns.** `candidate_test_returns()` is called after `fit()` (so calibration is done) but receives only test data. This is the correct data for the Reality Check: we're asking whether any candidate beats the benchmark out-of-sample, not whether the winner looks good on the same data used to select it.
+**Parallelism.** `cost_sensitivity_sweep(n_workers=N)` runs N independent walk-forwards concurrently using `ProcessPoolExecutor`. Each (cost, slippage) combination is fully independent, so this is embarrassingly parallel. Pass `n_workers=-1` to use all available CPUs. The inner walk-forward window loop is sequential by design - windows share a mutable strategy object that is re-fitted on each window.
 
----
-
-## Running it
-
-```bash
-git clone https://github.com/bonnie-mcconnell/backtesting-engine.git
-cd backtesting-engine
-poetry install
-make run
-```
-
-Downloads 30 years of SPY OHLCV, runs both strategies with walk-forward validation, prints a comparative table, and saves three HTML files. Open any of them in a browser - no server required.
-
-```bash
-make run-ma      # Moving average only
-make run-kalman  # Kalman filter only
-make test        # 153 tests
-make check       # lint + typecheck + tests
-```
-
-First run: approximately 3–5 minutes. Kalman MLE optimisation runs once per training window (~26 times). Bootstrap draws 10,000 block resamplings per window per strategy.
+**Data caching.** `load_data()` writes Parquet files to `~/.cache/backtesting-engine/`. Files are considered stale after 24 hours. Pass `use_cache=False` to force a fresh download.
 
 ---
 
 ## Tests
 
-153 tests across nine modules. Every numeric test derives its expected value independently of the implementation - expected values are never computed by calling the function under test.
+243 tests across twelve modules. All expected values are derived independently of the implementation - never by calling the function under test.
 
-| Module | Tests | Coverage |
-|---|---|---|
-| `test_metrics.py` | 27 | Each metric against hand-calculated values; NaN guards; edge cases |
-| `test_simulator.py` | 17 | Trade cycle; signal validation; portfolio/trade consistency |
-| `test_strategy.py` | 19 | MA signals; fit(); warmup context; `candidate_test_returns()` |
-| `test_kalman.py` | 23 | Filter recursion; MLE likelihood; fit() convergence; `active_params()` |
-| `test_reality_check.py` | 9 | p-value bounds; H0 behaviour; candidate matrix assembly |
-| `test_execution.py` | 15 | Slippage fills; signal delay; config validation; backward compatibility |
-| `test_walk_forward.py` | 21 | Window count; no look-ahead bias; Fisher p; active\_params storage; RC p-values |
-| `test_validator.py` | 11 | All structural checks |
-| `test_data/` | 11 | OHLCV ingestion; column presence; validation integration |
+| Module | What's tested |
+|---|---|
+| `test_metrics.py` | Sharpe/Sortino/drawdown/Calmar/Omega; NaN guards; edge cases |
+| `test_kalman.py` | Filter recursion; likelihood ordering; fit() convergence; active_params() |
+| `test_walk_forward.py` | Window count; no look-ahead; Fisher p; active_params storage; RC p-values |
+| `test_simulator.py` | Trade cycle; PnL; signal validation; portfolio consistency |
+| `test_strategy.py` | MA signals; fit(); context_window_size(); candidate_test_returns(); OCP compliance |
+| `test_momentum.py` | Signal logic; uptrend/downtrend detection; fit(); context; candidate returns |
+| `test_reality_check.py` | p-value bounds; H0 centering correctness; alpha detection; matrix assembly |
+| `test_execution.py` | Slippage fills; signal delay; _OpenPosition correctness; config validation |
+| `test_benchmark.py` | Buy-and-hold returns; cost deduction; information ratio; compute_benchmark() |
+| `test_cli.py` | Argument parser defaults, all flags, invalid input rejection, flag combinations |
+| `test_validator.py` | All structural data checks |
+| `test_data/` | OHLCV ingestion; ex-dividend reconciliation; validation integration |
 
 ---
 
 ## Design decisions
 
-**Why Kalman filter over a second moving average variant?** A second MA variant adds code without adding depth. The Kalman filter is a different model class: it has a generative probabilistic model, its parameters have statistical meaning (variance of process noise and observation noise), and calibration is by maximum likelihood rather than grid search. The comparison between a technical indicator and a properly specified statistical model is more interesting than between two technical indicators.
+**Why three strategies instead of one?** Moving average crossover and Kalman filter are both trend-following, so adding a second MA variant adds code without adding depth. Time-series momentum is mechanically distinct - it uses a single log-return over a fixed window rather than comparing two smoothed prices. The three strategies answer the same underlying question (is the trend up or down?) through different lenses, which makes their failure to beat buy-and-hold more informative than a single strategy's failure.
 
-**Why MLE in log-space with Nelder-Mead?** Q and R are variances - strictly positive and potentially spanning several orders of magnitude. Optimising log(Q) and log(R) enforces positivity without constraints and makes the search space roughly symmetric on the scale where the likelihood is meaningful. Nelder-Mead with `adaptive=True` handles the flat likelihood surface near `Q → 0` better than gradient-based methods.
+**Why Kalman filter over a second MA variant?** The Kalman filter is a different model class with a generative probabilistic structure, parameters with statistical meaning (Q = process noise variance, R = observation noise variance), and MLE calibration rather than grid search. A fixed MA is a special case of a Kalman filter with implicit, fixed Q/R. The comparison between a technical indicator and a properly specified state-space model is more interesting than between two technical indicators.
 
-**Why stationary bootstrap for the Reality Check?** White (2000) recommends the stationary bootstrap specifically because financial return series have heterogeneous autocorrelation. Fixed-block bootstrap underweights positions near array boundaries; variable block lengths from Geometric(1/b) ensure stationarity of the resampled series. Block size b = sqrt(T) is the standard recommendation.
+**Why MLE in log-space with Nelder-Mead?** Q and R are strictly positive and span several orders of magnitude. Optimising log Q and log R enforces positivity without constraints and makes the search space symmetric on the scale where the likelihood changes meaningfully. Nelder-Mead with `adaptive=True` handles the flat likelihood surface near Q → 0 better than gradient-based methods, which can stall there.
 
-**Why Fisher's method and not averaged p-values?** Averaging p-values has no sampling distribution justification. Fisher's `-2 Σ ln(pᵢ) ~ χ²(2k)` is more sensitive because a single window with very strong evidence dominates the statistic - which is correct when you want to detect whether any window shows genuine edge.
+**Why stationary bootstrap for the Reality Check?** White (2000) recommends it because financial return series have heterogeneous autocorrelation. Fixed-block bootstrap underweights positions near array boundaries. Variable block lengths from Geometric(1/b) ensure stationarity of the resampled series.
 
-**Why signal delay = 1 as the default?** Close prices are not actionable until after the market closes. Acting on a signal at the same bar that generated it requires knowing the closing price before close - which is impossible. A one-day delay is the minimum realistic assumption and is the standard in academic backtesting.
+**Why Fisher's method and not averaged p-values?** Averaging p-values has no sampling distribution justification. Fisher's `-2 Σ ln(pᵢ) ~ χ²(2k)` is derived from the fact that `-2 ln(p)` is χ²(2) under the null. It's also more sensitive: a single window with strong evidence dominates, which is the right behaviour when testing whether *any* window shows genuine edge.
 
-**Why circular block bootstrap for Sharpe?** Standard block bootstrap clips blocks at the array boundary, so blocks starting near the end are shorter than blocks starting elsewhere. This underrepresents tail behaviour. Circular bootstrap wraps around, so every block is exactly sqrt(n) and every position is equally likely as a block start.
+**Why signal delay = 1 as the default?** Close prices aren't actionable until after the close. Acting on a signal at the same bar requires knowing the closing price before close - impossible in practice. One-day delay is the minimum realistic assumption.
+
+**Why carry position state across window boundaries?** The naive approach resets every strategy to flat at the start of each test window. If the strategy was long at the training/test boundary - common in trending markets - it starts flat, misses the opening bars, and systematically understates returns. The correct approach detects the boundary position state from the context window and injects a buy signal at test bar 0 when entering long. All three strategies implement this.
+
+**Why circular block bootstrap for Sharpe?** Standard block bootstrap clips blocks at array boundaries, so positions near the end of the series are underrepresented. Circular bootstrap wraps around so every block has exactly √n bars and every position is equally likely as a block start.
 
 ---
 
 ## Known limitations
 
-**Single asset.** No multi-asset portfolio construction or cross-asset correlation. The natural extension is an ensemble layer that allocates across strategies based on regime detection.
+**Single asset.** No multi-asset portfolio construction. The natural extension is an ensemble layer that allocates across strategies and assets based on regime detection.
 
-**Approximate independence.** Fisher's combined p-value assumes walk-forward windows are independent. Adjacent windows share training data and both experience the same macro events. The p-value is approximate, not exact - and this is acknowledged in the output.
+**Approximate independence across windows.** Fisher's combined p-value assumes walk-forward windows are independent. Adjacent windows share training data and experience the same macro events. The p-value is an approximation - the output says so explicitly.
 
-**Block bootstrap power.** The block bootstrap Sharpe test has no power against iid alternatives. For strategies with independently distributed daily returns, p ≈ 0.5 regardless of Sharpe. It gains power specifically when the strategy exploits autocorrelation that block shuffling destroys. This is documented in both the code and test suite.
+**Block bootstrap power.** The per-window bootstrap p-value has no power against iid alternatives. For strategies with independently distributed returns, p ≈ 0.5 regardless of Sharpe. It gains power specifically when the strategy exploits autocorrelation that block shuffling destroys. Documented in both code and tests.
 
-**Close-to-close execution.** Trades fill at day's close plus slippage based on the daily range. Real institutional execution uses intraday data and VWAP as the benchmark. The slippage model is a reasonable approximation for daily strategies on liquid ETFs.
+**Metric aggregation across windows.** Sharpe, Sortino, and Omega are averaged across walk-forward windows - the standard walk-forward protocol where each window is an independent evaluation. Max drawdown reports the worst single window (not the mean - a mean drawdown is not meaningful). Calmar ratio is computed from the stitched portfolio across all windows so that cross-window compound drawdowns are captured correctly.
+
+**Sortino ratio uses downside deviation.** The denominator is `sqrt(mean(min(r,0)²))` - the RMS of returns below threshold - not `std(downside_returns)`. Using std would inflate the ratio for strategies with consistent small losses (std→0 as losses become uniform). The downside deviation definition matches Sortino & van der Meer (1991).
+
+**Close-to-close execution.** Fills at the close plus slippage based on the daily range. Real institutional execution uses intraday data and VWAP benchmarking. Reasonable for daily strategies on liquid ETFs; not suitable for intraday strategies or thinly traded names.
 
 ---
 
-## What I would build next
+## What I learned building this
 
-**Regime-conditioned strategy selection.** A hidden Markov model with two states (trending/mean-reverting) trained on rolling windows could gate strategy selection: Kalman filter in trending regimes, a mean-reversion variant in sideways markets. The walk-forward evaluation infrastructure is already in place - adding a regime classifier would be a new strategy wrapping two sub-strategies.
+The most important correctness constraint in the Reality Check is that `candidate_test_returns()` must receive test data, not training data. The bug is easy to introduce: the function runs after `fit()`, and `fit()` selects the best parameter pair by training Sharpe - so if you evaluate all candidates on training data, the winner is always ranked first by construction. Every bootstrap replication will confirm it. The p-values look low and definitive, but the test is circular - you are measuring how well the optimiser found the best in-sample pair, not whether any pair has genuine out-of-sample edge. The fix is one argument change, but understanding why it matters requires being precise about what the Reality Check null actually states: that no strategy in the search universe beats the benchmark in the out-of-sample period. That question has no meaning if the returns are from the training period.
 
-**ML-based strategy.** Feature engineering (returns, volatility, volume ratios, cross-sectional momentum) feeding a gradient-boosted classifier predicting next-day return direction, wrapped as a `BaseStrategy` subclass with `fit()` as training and `generate_signals()` as inference. The hard part - rigorous out-of-sample evaluation - is already done.
+The circular block bootstrap exists to fix a boundary problem in the standard implementation. If you draw blocks starting at random positions and clip at the array boundary, blocks near the end of the series are shorter than the target block size - a block starting at position 240 in a 252-bar window gets truncated to 12 bars instead of √252 ≈ 16. Positions near the end of the series are underrepresented in the null distribution. The effect is subtle because the p-values still look plausible - the bias only becomes visible when you check whether the bootstrap correctly fails to reject a null that should hold, or correctly rejects one that shouldn't. Tiling the array twice and using modular indexing so blocks wrap around costs nothing and removes the bias entirely.
 
-**Intraday execution model.** Replace close-to-close fills with a VWAP participation model using 5-minute bar data, making execution cost estimates directly comparable to what an institutional desk would report.
+The `_OpenPosition` dataclass replaced two local variables inside the simulation loop - `entry_price: float | None` and `entry_date: pd.Timestamp | None` - where the None-narrowing was done with `assert entry_price is not None` guards. The problem is that Python strips assert statements when run with the `-O` flag, which means in optimised mode the guard disappears and a None entry price reaches the arithmetic that computes P&L, producing a `TypeError` several frames from the actual mistake with no useful context. Grouping both fields into a single dataclass means the position state is either `None` (flat) or an `_OpenPosition` instance with both fields guaranteed present at construction time. The narrowing moves from a runtime assertion to a type-system guarantee.
+
+If I started over, the main thing I would change is parallelising the inner walk-forward window loop, not just the cost sensitivity sweep. The orchestrator passes the same strategy instance through all windows sequentially and calls `fit()` on each one. The windows are logically independent in terms of data, but parallelising requires spawning independent strategy copies per worker. That is straightforward for the MA and momentum strategies, but the Kalman filter's internal scipy optimiser state caused pickling errors across `ProcessPoolExecutor` workers, so I left the inner loop sequential and only parallelised the cost sweep, where each worker receives a fresh strategy instance. Fixing this properly would cut the per-strategy runtime from roughly two minutes to around fifteen seconds on an eight-core machine.
+
+---
+
+## What I'd build next
+
+**Regime-conditioned strategy selection.** A two-state HMM trained on rolling volatility could gate strategy selection: Kalman filter in trending regimes, a mean-reversion variant in sideways markets. The walk-forward infrastructure already handles this - a regime classifier would just be a new strategy wrapping two sub-strategies.
+
+**ML-based strategy.** Feature engineering (returns, volatility ratios, cross-sectional momentum) feeding a gradient-boosted classifier, wrapped as a `BaseStrategy` subclass. The hard part - rigorous out-of-sample evaluation - is already done.
+
+**Intraday execution model.** Replace close-to-close fills with a VWAP participation model on 5-minute bar data, making cost estimates comparable to what an institutional desk would report.
+
+**Parallel walk-forward windows.** The orchestrator passes the same strategy instance through all ~29 windows sequentially, calling `fit()` on each. Parallelising requires spawning independent strategy copies per worker - straightforward for MA and momentum, but the Kalman filter's `scipy.optimize.OptimizeResult` state caused pickling errors across `ProcessPoolExecutor` workers during development. Fixing this properly would reduce per-strategy runtime from ~2 minutes to ~15 seconds on an 8-core machine.

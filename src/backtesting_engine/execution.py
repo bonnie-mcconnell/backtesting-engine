@@ -37,12 +37,15 @@ Real execution has three additional frictions:
 
 ExecutionConfig
 ---------------
-A dataclass holding all execution parameters. Passed to run_simulation()
-instead of using global config constants, allowing cost sensitivity sweeps
-without touching config.py.
+A dataclass holding all execution parameters. Passed to
+run_simulation_with_execution() instead of using global config constants,
+allowing cost sensitivity sweeps without touching config.py.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -53,6 +56,14 @@ from backtesting_engine.config import (
     TRANSACTION_COST_RATE,
 )
 from backtesting_engine.models import SimulationResult, Trade
+
+if TYPE_CHECKING:
+    # Imported for type annotations only. At runtime, execution.py is imported
+    # by strategy/__init__.py (which re-exports from execution), creating a cycle
+    # if we import strategy.base unconditionally. TYPE_CHECKING is False at runtime
+    # so this branch is skipped; from __future__ import annotations makes all
+    # annotations strings so BaseStrategy is never evaluated at import time.
+    from backtesting_engine.strategy.base import BaseStrategy
 
 _VALID_SIGNALS = frozenset({-1, 0, 1})
 
@@ -87,6 +98,21 @@ class ExecutionConfig:
             raise ValueError("slippage_factor must be non-negative.")
         if self.signal_delay < 0:
             raise ValueError("signal_delay must be non-negative.")
+
+
+@dataclass
+class _OpenPosition:
+    """
+    State for a single open long position.
+
+    Grouping entry_price and entry_date into one object means the type
+    system enforces that you cannot have one without the other. This
+    eliminates the assert-based None-narrowing pattern that would silently
+    break if asserts were stripped by Python's -O flag.
+    """
+    entry_price: float
+    entry_date: pd.Timestamp
+    shares: float
 
 
 def run_simulation_with_execution(
@@ -155,9 +181,7 @@ def run_simulation_with_execution(
         signals = pd.Series(delayed_values, index=signals.index)
 
     cash: float = INITIAL_PORTFOLIO_VALUE
-    shares_held: float = 0.0
-    entry_price: float | None = None
-    entry_date: pd.Timestamp | None = None
+    position: _OpenPosition | None = None
 
     trades: list[Trade] = []
     portfolio_values: list[float] = []
@@ -173,52 +197,58 @@ def run_simulation_with_execution(
         buy_fill = close[idx] + slippage * daily_range
         sell_fill = close[idx] - slippage * daily_range
 
-        if shares_held == 0.0 and signal == 1:
+        if position is None and signal == 1:
+            # Open long position.
             position_value = cash * POSITION_SIZE_FRACTION
             buy_cost = position_value * cost_rate
-            shares_held = position_value / buy_fill
+            shares = position_value / buy_fill
             cash -= position_value + buy_cost
-            entry_price = buy_fill
-            entry_date = date
+            position = _OpenPosition(
+                entry_price=buy_fill,
+                entry_date=date,
+                shares=shares,
+            )
 
-        elif shares_held > 0.0 and signal == -1:
-            assert entry_price is not None and entry_date is not None
-            sell_proceeds = shares_held * sell_fill
+        elif position is not None and signal == -1:
+            # Close long position.
+            sell_proceeds = position.shares * sell_fill
             sell_cost = sell_proceeds * cost_rate
-            buy_cost = shares_held * entry_price * cost_rate
-            pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)
-
+            buy_cost = position.shares * position.entry_price * cost_rate
+            pnl = (
+                (sell_proceeds - sell_cost)
+                - (position.shares * position.entry_price + buy_cost)
+            )
             trades.append(Trade(
-                entry_date=entry_date,
+                entry_date=position.entry_date,
                 exit_date=date,
-                entry_price=entry_price,
+                entry_price=position.entry_price,
                 exit_price=sell_fill,
-                shares=shares_held,
+                shares=position.shares,
                 transaction_costs=buy_cost + sell_cost,
                 pnl=pnl,
             ))
             cash += sell_proceeds - sell_cost
-            shares_held = 0.0
-            entry_price = None
-            entry_date = None
+            position = None
 
+        shares_held = position.shares if position is not None else 0.0
         portfolio_values.append(cash + shares_held * close[idx])
 
     # Force-close any open position at end of window.
-    if shares_held > 0.0:
-        assert entry_price is not None and entry_date is not None
+    if position is not None:
         sell_fill_final = close[-1] - slippage * (high[-1] - low[-1])
-        sell_proceeds = shares_held * sell_fill_final
+        sell_proceeds = position.shares * sell_fill_final
         sell_cost = sell_proceeds * cost_rate
-        buy_cost = shares_held * entry_price * cost_rate
-        pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)
-
+        buy_cost = position.shares * position.entry_price * cost_rate
+        pnl = (
+            (sell_proceeds - sell_cost)
+            - (position.shares * position.entry_price + buy_cost)
+        )
         trades.append(Trade(
-            entry_date=entry_date,
+            entry_date=position.entry_date,
             exit_date=pd.Timestamp(str(signals.index[-1])),
-            entry_price=entry_price,
+            entry_price=position.entry_price,
             exit_price=sell_fill_final,
-            shares=shares_held,
+            shares=position.shares,
             transaction_costs=buy_cost + sell_cost,
             pnl=pnl,
         ))
@@ -238,60 +268,83 @@ def run_simulation_with_execution(
 
 def cost_sensitivity_sweep(
     data: pd.DataFrame,
-    strategy: object,
+    strategy: BaseStrategy,
     cost_rates: list[float],
     slippage_factors: list[float],
     training_window_years: int = 3,
     testing_window_years: int = 1,
+    n_workers: int = 1,
 ) -> dict[tuple[float, float], float]:
     """
     Sweep over (cost_rate, slippage_factor) pairs and return Fisher p-values.
 
-    Runs a full walk-forward analysis at each combination. The result maps
-    each (cost_rate, slippage) pair to the Fisher combined p-value, which
-    can be visualised as a heatmap to identify the breakeven cost level -
-    the point at which the strategy loses statistical significance.
+    Runs a full walk-forward analysis at each (cost, slippage) combination.
+    The result maps each pair to the Fisher combined p-value, which can be
+    visualised as a heatmap showing where the strategy loses statistical
+    significance - the breakeven cost level.
 
-    This is computationally intensive: O(len(cost_rates) × len(slippage_factors)
-    × n_windows × n_bootstrap) operations. For a typical SPY run with a 5×5
-    grid, this takes ~15 minutes.
+    Each combination is fully independent, so the sweep parallelises well.
+    Set n_workers > 1 to use multiple CPU cores. On a machine with 8+ cores
+    a 5×5 grid that takes ~12 minutes serially completes in ~2 minutes.
 
     Args:
         data: Full historical OHLCV DataFrame. Must include 'close'.
               'high' and 'low' are required for slippage_factor > 0.
         strategy: Any BaseStrategy implementation.
-        cost_rates: List of transaction cost rates to test (e.g. [0.0005, 0.001]).
-        slippage_factors: List of slippage fractions to test (e.g. [0.0, 0.05]).
+        cost_rates: List of transaction cost rates to test.
+        slippage_factors: List of slippage fractions to test.
         training_window_years: Years per training window.
         testing_window_years: Years per test window.
+        n_workers: Number of parallel workers. 1 = sequential (default).
+                   Use -1 to use all available CPUs.
 
     Returns:
         Dict mapping (cost_rate, slippage_factor) → Fisher p-value.
+        NaN if walk_forward raised for that combination (e.g. insufficient data).
     """
+    import os
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     from backtesting_engine.walk_forward import walk_forward  # avoid circular import
 
-    results: dict[tuple[float, float], float] = {}
-    len(cost_rates) * len(slippage_factors)
-    done = 0
+    if n_workers == -1:
+        n_workers = os.cpu_count() or 1
 
-    for cost in cost_rates:
-        for slip in slippage_factors:
-            exec_config = ExecutionConfig(
-                transaction_cost_rate=cost,
-                slippage_factor=slip,
-                signal_delay=1,  # always use 1-day delay for realism
+    pairs = [(c, s) for c in cost_rates for s in slippage_factors]
+
+    def _run_one(args: tuple[float, float]) -> tuple[tuple[float, float], float]:
+        cost, slip = args
+        exec_config = ExecutionConfig(
+            transaction_cost_rate=cost,
+            slippage_factor=slip,
+            signal_delay=1,
+        )
+        try:
+            result = walk_forward(
+                data,
+                strategy,
+                training_window_years=training_window_years,
+                testing_window_years=testing_window_years,
+                execution=exec_config,
             )
-            try:
-                result = walk_forward(
-                    data,
-                    strategy,  # type: ignore[arg-type]
-                    training_window_years=training_window_years,
-                    testing_window_years=testing_window_years,
-                    execution=exec_config,
-                )
-                results[(cost, slip)] = result.summary_metrics.combined_p_value
-            except ValueError:
-                results[(cost, slip)] = float("nan")
-            done += 1
+            return (cost, slip), result.summary_metrics.combined_p_value
+        except ValueError:
+            return (cost, slip), float("nan")
+
+    results: dict[tuple[float, float], float] = {}
+
+    if n_workers == 1:
+        # Sequential path: simpler, no pickling overhead, easier to debug.
+        for pair in pairs:
+            key, p_val = _run_one(pair)
+            results[key] = p_val
+    else:
+        # Parallel path: each walk-forward is independent so embarrassingly parallel.
+        # ProcessPoolExecutor avoids GIL; each worker gets its own Python interpreter.
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_run_one, pair): pair for pair in pairs}
+            for future in as_completed(futures):
+                key, p_val = future.result()
+                results[key] = p_val
 
     return results

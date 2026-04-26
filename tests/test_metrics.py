@@ -57,33 +57,54 @@ class TestSharpe:
 
 class TestSortino:
     def test_no_downside_returns_inf(self) -> None:
-        # No negative returns - Sortino is undefined, returns inf.
+        # No below-threshold returns - downside deviation is zero, Sortino = inf.
         returns = np.array([0.01, 0.02, 0.03])
         assert _sortino(returns) == float("inf")
 
-    def test_single_negative_return_returns_float_not_nan(self) -> None:
-        # Previously: ddof=1 with one downside observation → NaN.
-        # Fixed: single downside returns 0.0 (variance undefined, not infinite).
+    def test_single_negative_return_is_finite(self) -> None:
+        # Single negative return: downside_dev = abs(r), result is finite.
         returns = np.array([0.05, 0.03, -0.01, 0.02])
         result = _sortino(returns)
-        assert not math.isnan(result)
-        assert math.isfinite(result) or result == float("inf")
+        assert math.isfinite(result)
 
     def test_known_value(self) -> None:
-        # returns = [0.05, -0.01, -0.03]
-        # mean = 0.003333, downside = [-0.01, -0.03]
-        # downside std(ddof=1) = 0.014142...
-        # Sortino = 0.003333 / 0.014142 * sqrt(252) = 3.742...
+        # returns = [0.05, -0.01, -0.03], threshold = 0 (RISK_FREE_RATE)
+        # excess = same (threshold=0)
+        # negative_excess = [0, -0.01, -0.03]  (min(r, 0) for each r)
+        # downside_dev = sqrt(mean([0, 0.0001, 0.0009])) = sqrt(0.000333) = 0.018257
+        # mean_excess = mean([0.05, -0.01, -0.03]) = 0.003333
+        # Sortino = 0.003333 / 0.018257 * sqrt(252) = 2.898...
         returns = np.array([0.05, -0.01, -0.03])
-        mean = returns.mean()
-        downside_std = np.std([-0.01, -0.03], ddof=1)
-        expected = mean / downside_std * np.sqrt(252)
+        negative_excess = np.minimum(returns, 0.0)
+        downside_dev = np.sqrt(np.mean(negative_excess ** 2))
+        expected = returns.mean() / downside_dev * np.sqrt(252)
         assert np.isclose(_sortino(returns), expected, rtol=1e-5)
 
-    def test_all_negative_returns_positive_sortino_or_zero(self) -> None:
-        # Mean is negative - Sortino should also be negative (or zero if mean=0).
+    def test_consistent_small_losses_not_inflated(self) -> None:
+        # BUG CHECK: old std(downside) implementation gave Sortino → inf
+        # for consistent small losses (std→0). Correct downside deviation
+        # gives a finite, negative Sortino.
+        returns = np.array([-0.01, -0.01, -0.01, -0.01])
+        result = _sortino(returns)
+        assert math.isfinite(result)
+        assert result < 0.0  # negative mean → negative Sortino
+
+    def test_all_negative_returns_gives_negative_sortino(self) -> None:
         returns = np.array([-0.01, -0.02, -0.03])
         assert _sortino(returns) < 0.0
+
+    def test_downside_deviation_not_std(self) -> None:
+        # Verify we use RMS (downside deviation), not std(downside).
+        # For [-0.01, -0.02]:
+        #   std(ddof=1) = 0.00707  → would give large Sortino
+        #   downside_dev = sqrt(mean([0.0001, 0.0004])) = sqrt(0.00025) = 0.01581
+        # The two differ by factor ~2.2; check we get the smaller (correct) value.
+        returns = np.array([0.05, -0.01, -0.02])
+        result = _sortino(returns)
+        negative_excess = np.minimum(returns, 0.0)
+        expected_dd = np.sqrt(np.mean(negative_excess ** 2))
+        expected = returns.mean() / expected_dd * np.sqrt(252)
+        assert np.isclose(result, expected, rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -126,16 +147,57 @@ class TestCalmar:
         returns = np.array([0.01, 0.02, 0.03])
         assert _calmar(returns) == float("inf")
 
-    def test_known_value_zero_mean(self) -> None:
-        # returns = [0.1, -0.2, 0.1]  → mean = 0.0, annualised return = 0.0
-        # Calmar = 0.0 / 0.2 = 0.0
+    def test_known_value_negative_geometric_return(self) -> None:
+        # returns = [0.1, -0.2, 0.1]
+        # arithmetic mean = 0.0, but geometric compound:
+        #   prod(1.1 * 0.8 * 1.1) = 0.968 → cumulative = 0.968
+        #   annualised = 0.968^(252/3) - 1 ≈ -8.7%  (negative despite zero arithmetic mean)
+        # max_drawdown = (0.88 - 1.0) / 1.0 = -0.20
+        # Calmar = annualised / abs(max_dd) ≈ negative / 0.20
+        # This test verifies that we use geometric (not arithmetic) compounding.
         returns = np.array([0.1, -0.2, 0.1])
-        assert np.isclose(_calmar(returns), 0.0, atol=1e-5)
+        n = len(returns)
+        cumulative = float(np.prod(1.0 + returns))
+        ann = cumulative ** (252 / n) - 1.0
+        from backtesting_engine.metrics import _max_drawdown
+        max_dd = abs(_max_drawdown(returns))
+        expected = ann / max_dd
+        assert np.isclose(_calmar(returns), expected, rtol=1e-5)
+        # Also verify it is negative (geometric beats arithmetic here)
+        assert _calmar(returns) < 0.0
 
     def test_positive_mean_positive_calmar(self) -> None:
         # Positive average returns with some drawdown → positive Calmar.
         returns = np.array([0.02, -0.01, 0.03, -0.005, 0.02])
         assert _calmar(returns) > 0.0
+
+    def test_uses_geometric_not_arithmetic_compounding(self) -> None:
+        # Regression: old formula used (1 + mean_daily)^252.
+        # Arithmetic mean = 0 for [0.1, -0.2, 0.1], so old formula gave
+        # annualised return = 0, Calmar = 0.
+        # Correct geometric: prod([1.1, 0.8, 1.1])^(252/3) - 1 ≈ -93%
+        # Calmar = -93% / 20% = -4.67, NOT 0.0.
+        returns = np.array([0.1, -0.2, 0.1])
+        result = _calmar(returns)
+        # Must not be zero (old arithmetic formula gave 0)
+        assert abs(result) > 0.1, (
+            f"Calmar should reflect geometric return, got {result:.4f}. "
+            "Old formula incorrectly returned 0.0 due to arithmetic mean = 0."
+        )
+        # Should be negative (geometric return is negative despite arithmetic mean = 0)
+        assert result < 0.0
+
+    def test_geometric_vs_arithmetic_divergence(self) -> None:
+        # With high-volatility returns, geometric < arithmetic (variance drag).
+        # Calmar using geometric should be LOWER than using arithmetic.
+        rng = np.random.default_rng(1)
+        returns = rng.normal(0.002, 0.02, 252)  # positive drift, realistic vol
+        n = len(returns)
+        # Compute both formulas explicitly
+        arith_ann = (1 + float(np.mean(returns)))**252 - 1
+        geom_ann = float(np.prod(1 + returns))**(252/n) - 1
+        # Geometric must be lower (variance drag: ~0.5*vol^2*T per year)
+        assert geom_ann < arith_ann, "Geometric return must be below arithmetic for nonzero variance"
 
 
 # ---------------------------------------------------------------------------

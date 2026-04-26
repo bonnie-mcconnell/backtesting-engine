@@ -6,53 +6,18 @@ counts, date boundaries, and statistical properties can be verified by hand.
 All tests pass window sizes explicitly rather than relying on config defaults,
 so they remain valid even if config constants change.
 
-Fixture design note:
-    Monotonically trending data is NOT used here. A perfectly linear price
-    series has exactly one golden cross in its entire history. If that crossover
-    falls in the training period, the test window produces zero signals and the
-    window is skipped. Oscillating data (sinusoidal with slight upward drift)
-    guarantees multiple crossovers across the full history, ensuring at least
-    one crossover fires in each test window.
+Shared fixtures (oscillating_504, oscillating_756, strategy) and the
+make_oscillating_data() helper are defined in conftest.py and auto-injected
+by pytest - no import required.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
+from helpers import make_oscillating_data
 
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import _fisher_combined_p, walk_forward
-
-
-def _oscillating_data(n: int, start: str = "2010-01-01") -> pd.DataFrame:
-    """
-    Sinusoidal prices with a slight upward trend.
-
-    Period chosen so multiple golden/death crosses appear in every 252-day
-    test window regardless of where the window starts.
-    """
-    dates = pd.date_range(start, periods=n, freq="B")
-    t = np.linspace(0, 20 * np.pi, n)  # dense enough that fit()-selected windows still cross
-    prices = 100.0 + 20.0 * np.sin(t) + 0.05 * np.arange(n)
-    return pd.DataFrame({"close": prices}, index=dates)
-
-
-@pytest.fixture
-def oscillating_504() -> pd.DataFrame:
-    """504 business days of oscillating prices - fits exactly one 1+1yr window."""
-    return _oscillating_data(504)
-
-
-@pytest.fixture
-def oscillating_756() -> pd.DataFrame:
-    """756 business days of oscillating prices - fits exactly two 1+1yr windows."""
-    return _oscillating_data(756)
-
-
-@pytest.fixture
-def strategy() -> MovingAverageStrategy:
-    """Fixed short/long windows so fit() grid search doesn't dominate test time."""
-    return MovingAverageStrategy(short_window=20, long_window=50)
-
 
 # ---------------------------------------------------------------------------
 # Window count
@@ -265,3 +230,135 @@ class TestRealityCheckWithTestReturns:
         result = walk_forward(oscillating_504, KalmanFilterStrategy(),
                               training_window_years=1, testing_window_years=1)
         assert math.isnan(result.summary_metrics.reality_check_p_value)
+
+
+# ---------------------------------------------------------------------------
+# Summary metric aggregation correctness
+# ---------------------------------------------------------------------------
+
+class TestSummaryMetricAggregation:
+    """
+    Verify that summary metrics use the correct aggregation method for each metric.
+
+    Key design decisions:
+    - Sharpe/Sortino/Omega/p_value: mean across windows (standard walk-forward)
+    - max_drawdown: worst-case (minimum) across windows, not mean
+    - calmar_ratio: computed from stitched portfolio returns, not per-window mean
+    """
+
+    def test_max_drawdown_is_worst_not_mean(
+        self, oscillating_756: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(
+            oscillating_756, strategy,
+            training_window_years=1, testing_window_years=1
+        )
+        valid = result.valid_windows
+        if len(valid) < 2:
+            pytest.skip("Need at least 2 windows")
+
+        per_window_dds = [w.metrics_result.max_drawdown for w in valid]
+        worst = min(per_window_dds)
+        mean = float(sum(per_window_dds) / len(per_window_dds))
+
+        # Summary must be worst-case, not mean
+        assert abs(result.summary_metrics.max_drawdown - worst) < 1e-8, (
+            f"Summary max_dd={result.summary_metrics.max_drawdown:.4f} "
+            f"should equal worst={worst:.4f}, not mean={mean:.4f}"
+        )
+
+    def test_calmar_is_stitched_not_per_window_mean(
+        self, oscillating_756: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        result = walk_forward(
+            oscillating_756, strategy,
+            training_window_years=1, testing_window_years=1
+        )
+        valid = result.valid_windows
+        if not valid:
+            pytest.skip("No valid windows")
+
+        # Compute expected: Calmar from stitched returns
+        import numpy as np
+
+        from backtesting_engine.metrics import _calmar
+        all_rets = []
+        for w in valid:
+            pv = w.simulation_result.portfolio_values
+            if pv is not None and len(pv) > 1:
+                all_rets.append(pv.pct_change().dropna().to_numpy())
+
+        if not all_rets:
+            pytest.skip("No portfolio returns")
+
+        stitched = np.concatenate(all_rets)
+        expected_calmar = _calmar(stitched)
+
+        assert abs(result.summary_metrics.calmar_ratio - expected_calmar) < 1e-6, (
+            f"Summary Calmar={result.summary_metrics.calmar_ratio:.4f} "
+            f"should equal stitched={expected_calmar:.4f}"
+        )
+
+    def test_sharpe_is_mean_not_stitched(
+        self, oscillating_756: pd.DataFrame, strategy: MovingAverageStrategy
+    ) -> None:
+        # Sharpe SHOULD be mean of per-window Sharpes (standard walk-forward protocol)
+        result = walk_forward(
+            oscillating_756, strategy,
+            training_window_years=1, testing_window_years=1
+        )
+        valid = result.valid_windows
+        if not valid:
+            pytest.skip("No valid windows")
+
+        import numpy as np
+        per_sharpes = [w.metrics_result.sharpe_ratio for w in valid]
+        expected = float(np.mean(per_sharpes))
+        assert abs(result.summary_metrics.sharpe_ratio - expected) < 1e-8
+
+
+# ---------------------------------------------------------------------------
+# Input validation - window year parameters
+# ---------------------------------------------------------------------------
+
+class TestWalkForwardInputValidation:
+    """
+    Verify that walk_forward raises early with a clear error message when
+    called with invalid window year parameters.
+
+    Motivation: without this guard, training_window_years=0 produces
+    train_days=0, strategy.fit() receives an empty DataFrame, and each
+    strategy crashes with a different, confusing error deep in its own code.
+    A single ValueError at the entry point is much easier to debug.
+    """
+
+    def test_zero_training_years_raises(self, strategy: MovingAverageStrategy) -> None:
+        data = make_oscillating_data(756)
+        with pytest.raises(ValueError, match="positive"):
+            walk_forward(data, strategy, training_window_years=0, testing_window_years=1)
+
+    def test_zero_testing_years_raises(self, strategy: MovingAverageStrategy) -> None:
+        data = make_oscillating_data(756)
+        with pytest.raises(ValueError, match="positive"):
+            walk_forward(data, strategy, training_window_years=1, testing_window_years=0)
+
+    def test_negative_training_years_raises(self, strategy: MovingAverageStrategy) -> None:
+        data = make_oscillating_data(756)
+        with pytest.raises(ValueError, match="positive"):
+            walk_forward(data, strategy, training_window_years=-1, testing_window_years=1)
+
+    def test_negative_testing_years_raises(self, strategy: MovingAverageStrategy) -> None:
+        data = make_oscillating_data(756)
+        with pytest.raises(ValueError, match="positive"):
+            walk_forward(data, strategy, training_window_years=1, testing_window_years=-1)
+
+    def test_valid_years_do_not_raise(self, strategy: MovingAverageStrategy) -> None:
+        # Sanity check: the guard must not fire on legitimate inputs.
+        data = make_oscillating_data(756)
+        # Should not raise - may produce no valid windows but must not error on the guard.
+        try:
+            walk_forward(data, strategy, training_window_years=1, testing_window_years=1)
+        except ValueError as e:
+            assert "positive" not in str(e), (
+                f"Guard fired on valid inputs: {e}"
+            )

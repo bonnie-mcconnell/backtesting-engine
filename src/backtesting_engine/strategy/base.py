@@ -84,7 +84,7 @@ def returns_from_signals(close: np.ndarray, signals: np.ndarray) -> np.ndarray:
     # Vectorised hold logic: replace 0 (hold) with NaN, forward-fill the most
     # recent buy (+1) or sell (-1), then map to {+1 → long, else → flat}.
     #
-    # This is semantically identical to the naive Python loop — the loop simply
+    # This is semantically identical to the naive Python loop - the loop simply
     # inspects each bar and carries the last non-zero signal forward. Pandas
     # ffill does the same operation in C, roughly 10–20× faster on typical
     # window sizes. For the MA grid search (112 candidate pairs × ~756-bar
@@ -218,7 +218,7 @@ class BaseStrategy(ABC):
         the strategy requires no warmup context (e.g. it is stateless or handles
         initialisation internally).
 
-        Default: 50 bars — conservative for most state-space models and short-window
+        Default: 50 bars - conservative for most state-space models and short-window
         indicators. Strategies with long lookback periods (e.g. a 200-day MA) must
         override this to return a value at least as large as their longest window.
 

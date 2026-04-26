@@ -55,7 +55,7 @@ class MovingAverageStrategy(BaseStrategy):
         All (short, long) pairs evaluated during the most recent fit().
         Used by candidate_test_returns() to avoid recomputing the grid.
         Leading underscore marks this as an implementation detail of the
-        Reality Check interface — not part of the strategy's primary API.
+        Reality Check interface - not part of the strategy's primary API.
         Trailing underscore marks it as fitted state (populated by fit()).
     """
 
@@ -86,7 +86,7 @@ class MovingAverageStrategy(BaseStrategy):
         candidate_test_returns() can evaluate the same universe on test data.
 
         Important: the grid search uses pre-cost, pre-slippage, zero-delay
-        returns (via _returns_from_signals). This is standard practice — you
+        returns (via _returns_from_signals). This is standard practice - you
         cannot know execution costs with certainty during parameter selection,
         and optimising over costs would introduce another layer of look-ahead.
         The selected parameters are then evaluated out-of-sample with the full
@@ -161,7 +161,7 @@ class MovingAverageStrategy(BaseStrategy):
         The plain diff() approach emits signals only on crossover bars. If the
         short MA is already above the long MA at the start of the test window
         (i.e. the strategy is already long from the training period), no buy
-        signal is emitted for bar 0 of the test — the simulator starts flat.
+        signal is emitted for bar 0 of the test - the simulator starts flat.
 
         Fix: detect whether the strategy would be in a long position at the
         transition from context to test data. If yes, inject a buy signal at

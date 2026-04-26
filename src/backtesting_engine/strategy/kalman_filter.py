@@ -144,8 +144,8 @@ class KalmanFilterStrategy(BaseStrategy):
         depending on Q/R. Providing 50 context bars ensures the filter state
         is stable before signals are evaluated on test data.
 
-        50 is conservative — the filter converges within ~20 bars for typical
-        Q/R values — but the cost of extra context is negligible and the
+        50 is conservative - the filter converges within ~20 bars for typical
+        Q/R values - but the cost of extra context is negligible and the
         protection against poorly initialised states at window boundaries
         is worth it.
         """
@@ -316,17 +316,17 @@ def _kalman_filter(log_prices: np.ndarray, q: float, r: float) -> np.ndarray:
 
     # Prior: diffuse initialisation.
     # mu_0 = first observation (best available prior mean with no other information).
-    # P_0  = 1.0 — a weakly informative prior variance scaled to log-price space.
+    # P_0  = 1.0 - a weakly informative prior variance scaled to log-price space.
     #
     # Why 1.0 and not a truly diffuse prior (P → ∞)?
     # In log-price space, a daily log-return of 0.01 (1%) is typical for equities.
     # A prior variance of 1.0 means the prior 95% interval is ±2 log-price units,
     # corresponding to a price range of roughly [e^-2, e^2] ≈ [0.13×, 7.4×] the
-    # starting price — which is uninformative for any realistic asset.
+    # starting price - which is uninformative for any realistic asset.
     #
     # In the limit P → ∞ the first-bar Kalman gain K → 1, so the filter simply
     # sets μ[0] = y[0] and P[0] = R. With P=1 and typical calibrated R~1e-2,
-    # the first-bar K = (1+Q)/(1+Q+R) ≈ 0.99 — practically identical to the
+    # the first-bar K = (1+Q)/(1+Q+R) ≈ 0.99 - practically identical to the
     # diffuse limit. Any residual initialisation effect decays within ~5 bars.
     # The context window (50 bars) eliminates this effect entirely for test signals.
     mu = log_prices[0]

@@ -103,7 +103,7 @@ class BacktestResult:
 
     Not frozen: window_results is a mutable list, and pd.Series in nested
     SimulationResult objects are not hashable, so frozen=True would require
-    a custom __hash__. The trade-off is intentional — treat this as read-only
+    a custom __hash__. The trade-off is intentional - treat this as read-only
     after construction.
     """
     strategy_name: str

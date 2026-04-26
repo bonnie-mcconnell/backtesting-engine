@@ -22,6 +22,7 @@ in-sample). The Reality Check must use out-of-sample returns for all
 candidates to test whether ANY candidate beat the benchmark by luck.
 """
 
+import math
 from typing import Any
 
 import numpy as np
@@ -34,12 +35,10 @@ from backtesting_engine.config import (
     TRAINING_WINDOW_YEARS,
 )
 from backtesting_engine.execution import ExecutionConfig, run_simulation_with_execution
-from backtesting_engine.metrics import calculate_metrics
+from backtesting_engine.metrics import _calmar, calculate_metrics
 from backtesting_engine.models import BacktestResult, MetricsResult, WindowResult
 from backtesting_engine.reality_check import build_candidate_return_matrix, white_reality_check
 from backtesting_engine.strategy.base import BaseStrategy
-from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
-from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 
 
 def walk_forward(
@@ -67,8 +66,15 @@ def walk_forward(
         White's Reality Check p-value, parameter evolution, and skipped count.
 
     Raises:
-        ValueError: If no valid windows could be evaluated.
+        ValueError: If no valid windows could be evaluated, or if
+                    training_window_years or testing_window_years are non-positive.
     """
+    if training_window_years <= 0 or testing_window_years <= 0:
+        raise ValueError(
+            f"training_window_years and testing_window_years must be positive integers, "
+            f"got training={training_window_years}, testing={testing_window_years}."
+        )
+
     if execution is None:
         execution = ExecutionConfig()
 
@@ -120,7 +126,15 @@ def walk_forward(
             continue
 
         # ── Step 5: Compute out-of-sample metrics ─────────────────────────
-        assert sim.portfolio_values is not None
+        if sim.portfolio_values is None:
+            # run_simulation_with_execution always sets portfolio_values, even
+            # when no trades execute. This guard exists because asserts are
+            # stripped by Python's -O flag; a None here would cause a confusing
+            # AttributeError on pct_change() several frames away.
+            raise ValueError(
+                "Simulation returned None portfolio_values. "
+                "This indicates a bug in run_simulation_with_execution()."
+            )
         metrics = calculate_metrics(sim.portfolio_values)
 
         window_results.append(WindowResult(
@@ -173,35 +187,30 @@ def walk_forward(
 
 def _get_context(strategy: BaseStrategy, train_data: pd.DataFrame) -> pd.DataFrame:
     """
-    Return the appropriate warmup context slice for signal generation.
+    Return the warmup context slice from the tail of training data.
 
-    MA strategies need long_window rows to warm up their rolling averages.
-    Kalman filter converges within ~20 bars; 50 rows is conservative.
-    Other strategies get the last 50 rows by default.
+    Uses strategy.context_window_size() so the orchestrator needs no knowledge
+    of strategy internals. Every BaseStrategy subclass declares how many bars
+    of warmup it requires; the orchestrator simply honours that declaration.
+
+    This replaces the previous isinstance dispatch, which required editing the
+    orchestrator every time a new strategy was added (open/closed violation).
     """
-    if isinstance(strategy, MovingAverageStrategy):
-        return train_data.iloc[-strategy.long_window_:]
-    if isinstance(strategy, KalmanFilterStrategy):
-        return train_data.iloc[-50:]
-    return train_data.iloc[-50:]
+    n = strategy.context_window_size()
+    if n <= 0:
+        return train_data.iloc[0:0]   # empty slice, correct dtype/columns preserved
+    return train_data.iloc[-n:]
 
 
 def _extract_active_params(strategy: BaseStrategy) -> dict[str, object]:
     """
     Extract calibrated parameters from the strategy for WindowResult storage.
 
-    Uses duck typing via hasattr rather than isinstance checks so that
-    custom strategies can opt in by implementing active_params().
+    Delegates to strategy.active_params() - the standard BaseStrategy interface.
+    All strategies that calibrate parameters during fit() override active_params()
+    to return their current calibrated values. The orchestrator does not need to
+    know which strategy it is talking to.
     """
-    if isinstance(strategy, MovingAverageStrategy):
-        return {
-            "short_window": strategy.short_window_,
-            "long_window": strategy.long_window_,
-        }
-    if isinstance(strategy, KalmanFilterStrategy):
-        return strategy.active_params()
-    # Fallback: BaseStrategy.active_params() returns {} by default.
-    # Subclasses that store calibrated params override this method.
     return strategy.active_params()
 
 
@@ -216,13 +225,39 @@ def _build_summary_metrics(
     """
     Aggregate per-window metrics with Fisher combined p and Reality Check p.
 
+    Aggregation choices:
+    - Sharpe, Sortino, Omega, p_value: mean across windows. This is the standard
+      walk-forward aggregation - each window is an independent evaluation and
+      the mean represents typical out-of-sample performance.
+    - max_drawdown: worst (minimum) across windows, not mean. Users care about
+      the worst-case drawdown they would have experienced, not the average.
+      A strategy with -30% dd in one window and -5% in four others has a
+      reported max_dd of -30%, not -10%.
+    - calmar_ratio: computed from the stitched portfolio returns across all
+      windows, not averaged per-window. Max drawdown is path-dependent and
+      can span window boundaries; per-window averaging misses cross-window
+      drawdowns and overstates the ratio by up to 3x.
+    - inf values are excluded from means (treated as undefined for that window).
+
     Reality Check uses test-period returns of every candidate from every
     window. build_candidate_return_matrix() intersects the candidate keys
     across windows (only candidates evaluated in ALL windows are included)
     and concatenates their return series into a (T_total × k) matrix.
     """
     def mean_metric(attr: str) -> float:
-        return float(np.mean([getattr(w.metrics_result, attr) for w in valid_windows]))
+        vals = [getattr(w.metrics_result, attr) for w in valid_windows]
+        finite_vals = [v for v in vals if not (math.isnan(v) or abs(v) == float("inf"))]
+        if not finite_vals:
+            return float("inf")
+        return float(np.mean(finite_vals))
+
+    # Worst-case max drawdown across all windows (not mean).
+    worst_max_dd = float(min(
+        w.metrics_result.max_drawdown for w in valid_windows
+    ))
+
+    # Calmar from stitched returns - necessary because max drawdown can span windows.
+    stitched_calmar = _calmar_from_stitched(valid_windows)
 
     fisher_p = _fisher_combined_p([w.metrics_result.p_value for w in valid_windows])
 
@@ -236,14 +271,19 @@ def _build_summary_metrics(
             ]
             candidate_matrix = build_candidate_return_matrix(arr_dicts)
             rc_p = white_reality_check(candidate_matrix)
-        except (ValueError, Exception):
+        except ValueError:
+            # build_candidate_return_matrix raises ValueError when no
+            # candidate parameter pair was evaluated in every window -
+            # this happens when some windows are too short for certain
+            # (short, long) combinations. NaN is the correct output:
+            # the Reality Check is not computable, not zero or one.
             rc_p = float("nan")
 
     return MetricsResult(
         sharpe_ratio=mean_metric("sharpe_ratio"),
         sortino_ratio=mean_metric("sortino_ratio"),
-        max_drawdown=mean_metric("max_drawdown"),
-        calmar_ratio=mean_metric("calmar_ratio"),
+        max_drawdown=worst_max_dd,
+        calmar_ratio=stitched_calmar,
         omega_ratio=mean_metric("omega_ratio"),
         p_value=mean_metric("p_value"),
         combined_p_value=fisher_p,
@@ -251,12 +291,53 @@ def _build_summary_metrics(
     )
 
 
+def _calmar_from_stitched(valid_windows: list[WindowResult]) -> float:
+    """
+    Compute Calmar ratio from the stitched portfolio across all walk-forward windows.
+
+    Calmar = annualised geometric return / abs(max drawdown) computed on the
+    concatenated daily returns from every valid test window in sequence.
+
+    This correctly captures cross-window drawdowns that per-window averaging
+    misses. If strategy loses 10% at the end of window 1 and another 10% at
+    the start of window 2, the stitched max_dd reflects the -19% compound
+    drawdown; per-window averaging would show only -10%.
+    """
+    all_returns: list[np.ndarray] = []
+    for w in valid_windows:
+        pv = w.simulation_result.portfolio_values
+        if pv is not None and len(pv) > 1:
+            rets = pv.pct_change().dropna().to_numpy(dtype=float)
+            if len(rets) > 0:
+                all_returns.append(rets)
+
+    if not all_returns:
+        return float("nan")
+
+    stitched = np.concatenate(all_returns)
+    return _calmar(stitched)
+
+
 def _fisher_combined_p(p_values: list[float]) -> float:
     """
     Fisher's combined probability test.
 
-    Under the joint null, -2 Σ ln(pᵢ) ~ χ²(2k).
-    More powerful than averaging: dominated by windows with small p-values.
+    Under the joint null, -2 Σ ln(pᵢ) ~ χ²(2k), where k is the number of
+    windows. More powerful than averaging p-values because it weights each
+    window by -ln(pᵢ) - windows with small p-values contribute more to the
+    test statistic.
+
+    Important caveat: Fisher's method is sensitive to individual strong
+    signals. A single window with p=0.001 contributes as much to the χ²
+    statistic as ~14 windows with p=0.5. This is a feature when one window
+    represents a genuine effect, but it means the combined p-value can fall
+    below 0.05 even when only one of twenty-nine windows showed anything
+    noteworthy. Interpret in conjunction with the per-window p-values
+    displayed in the dashboard.
+
+    The windows are not strictly independent (rolling data overlap in adjacent
+    windows) so the χ²(2k) approximation is slightly anti-conservative.
+    Fisher's p is treated as a heuristic ordering criterion, not a formal test.
     """
     clipped = np.clip(p_values, 1e-300, 1.0 - 1e-10)
     chi2_stat = -2.0 * np.sum(np.log(clipped))

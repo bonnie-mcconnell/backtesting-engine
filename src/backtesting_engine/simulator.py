@@ -1,8 +1,14 @@
 """
-Trade execution simulator.
+Trade execution simulator (baseline, no slippage or signal delay).
 
 Processes a price DataFrame and a signal Series to produce a SimulationResult:
 the list of executed trades and the daily portfolio value series.
+
+This is the original, cost-only simulator. For walk-forward runs, prefer
+run_simulation_with_execution() from execution.py, which adds slippage,
+signal delay, and a configurable ExecutionConfig. This module is retained
+because test_simulator.py exercises it directly and its explicit bar-by-bar
+loop makes the execution model easy to read and reason about line by line.
 
 Execution model:
   - Signals are processed bar-by-bar in chronological order.
@@ -17,6 +23,8 @@ execution logic transparent and line-by-line testable, at the cost of speed.
 For daily data over a single asset across decades, the performance is fine.
 """
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 from backtesting_engine.config import (
@@ -28,6 +36,21 @@ from backtesting_engine.models import SimulationResult, Trade
 
 # Valid signal values. Anything outside this set is a caller contract violation.
 _VALID_SIGNALS = frozenset({-1, 0, 1})
+
+
+@dataclass
+class _OpenPosition:
+    """
+    State for a single open long position.
+
+    Grouping entry_price, entry_date, and shares into one object means the
+    type system enforces that you cannot hold one field without the others.
+    This eliminates the assert-based None-narrowing pattern that breaks
+    silently when Python is run with the -O (optimise) flag.
+    """
+    entry_price: float
+    entry_date: pd.Timestamp
+    shares: float
 
 
 def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
@@ -64,9 +87,7 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
     close_prices = data["close"].to_numpy(dtype=float)
 
     cash: float = INITIAL_PORTFOLIO_VALUE
-    shares_held: float = 0.0
-    entry_price: float | None = None
-    entry_date: pd.Timestamp | None = None
+    position: _OpenPosition | None = None
 
     trades: list[Trade] = []
     portfolio_values: list[float] = []
@@ -75,72 +96,63 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
         current_price = close_prices[idx]
         date = pd.Timestamp(str(date))
 
-        if shares_held == 0.0 and signal == 1:
-            # --- Open long position ---
+        if position is None and signal == 1:
+            # Open long position.
             position_value = cash * POSITION_SIZE_FRACTION
             buy_cost = position_value * TRANSACTION_COST_RATE
-            shares_held = position_value / current_price
+            shares = position_value / current_price
             cash -= position_value + buy_cost
-            entry_price = current_price
-            entry_date = date
+            position = _OpenPosition(
+                entry_price=current_price,
+                entry_date=date,
+                shares=shares,
+            )
 
-        elif shares_held > 0.0 and signal == -1:
-            # --- Close long position ---
-            # entry_price and entry_date are always set when shares_held > 0,
-            # but the type checker doesn't know that - assert here to be safe.
-            assert entry_price is not None and entry_date is not None
-
-            sell_proceeds = shares_held * current_price
+        elif position is not None and signal == -1:
+            # Close long position.
+            sell_proceeds = position.shares * current_price
             sell_cost = sell_proceeds * TRANSACTION_COST_RATE
-            buy_cost = shares_held * entry_price * TRANSACTION_COST_RATE
-
-            pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)
-
+            buy_cost = position.shares * position.entry_price * TRANSACTION_COST_RATE
+            pnl = (sell_proceeds - sell_cost) - (
+                position.shares * position.entry_price + buy_cost
+            )
             trades.append(Trade(
-                entry_date=entry_date,
+                entry_date=position.entry_date,
                 exit_date=date,
-                entry_price=entry_price,
+                entry_price=position.entry_price,
                 exit_price=current_price,
-                shares=shares_held,
+                shares=position.shares,
                 transaction_costs=buy_cost + sell_cost,
                 pnl=pnl,
             ))
-
             cash += sell_proceeds - sell_cost
-            shares_held = 0.0
-            entry_price = None
-            entry_date = None
+            position = None
 
         # Record portfolio value at end of this bar.
-        # If a position was just opened, cash already reflects the purchase.
-        # If a position is held, mark it to market at today's close.
+        shares_held = position.shares if position is not None else 0.0
         portfolio_values.append(cash + shares_held * current_price)
 
-    # --- Force-close any position still open at end of window ---
-    if shares_held > 0.0:
-        assert entry_price is not None and entry_date is not None
-
+    # Force-close any position still open at end of window.
+    if position is not None:
         final_price = close_prices[-1]
         final_date = pd.Timestamp(str(signals.index[-1]))
 
-        sell_proceeds = shares_held * final_price
+        sell_proceeds = position.shares * final_price
         sell_cost = sell_proceeds * TRANSACTION_COST_RATE
-        buy_cost = shares_held * entry_price * TRANSACTION_COST_RATE
-        pnl = (sell_proceeds - sell_cost) - (shares_held * entry_price + buy_cost)
-
+        buy_cost = position.shares * position.entry_price * TRANSACTION_COST_RATE
+        pnl = (sell_proceeds - sell_cost) - (
+            position.shares * position.entry_price + buy_cost
+        )
         trades.append(Trade(
-            entry_date=entry_date,
+            entry_date=position.entry_date,
             exit_date=final_date,
-            entry_price=entry_price,
+            entry_price=position.entry_price,
             exit_price=final_price,
-            shares=shares_held,
+            shares=position.shares,
             transaction_costs=buy_cost + sell_cost,
             pnl=pnl,
         ))
-
         # Update the final portfolio value to reflect the closing costs.
-        # The last bar was already appended as cash + shares * price (pre-cost),
-        # so we subtract the sell cost to keep the series consistent with trades.
         cash += sell_proceeds - sell_cost
         portfolio_values[-1] = cash
 

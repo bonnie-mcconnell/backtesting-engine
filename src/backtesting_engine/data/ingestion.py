@@ -8,7 +8,7 @@ Returns a DataFrame with a DatetimeIndex and columns:
   volume - daily volume           (available for future volume-based strategies)
 
 Why adjusted close but unadjusted high/low?
-Adjusted closing prices are necessary for accurate return computation — without
+Adjusted closing prices are necessary for accurate return computation - without
 adjustment, dividends and splits create artificial price gaps that look like
 overnight losses. Intraday high/low are used only for slippage estimation
 (fill = close ± factor × range), where what matters is the intraday range
@@ -19,7 +19,7 @@ adjusted close is reduced by the dividend amount, which can place it slightly
 outside the unadjusted [low, high] band. load_data() clips the adjusted close
 to [low, high] on such dates so the slippage model never produces a negative
 intraday range. The clip is applied only when the discrepancy is below a
-threshold (0.5% of close) — larger discrepancies indicate a data error and
+threshold (0.5% of close) - larger discrepancies indicate a data error and
 raise rather than silently adjust.
 
 Caching
@@ -111,7 +111,7 @@ def _load_from_cache(ticker: str, start_date: str) -> pd.DataFrame | None:
     try:
         return pd.read_parquet(path)
     except (OSError, Exception):
-        # Corrupt or unreadable cache file — re-download. We catch broadly here
+        # Corrupt or unreadable cache file - re-download. We catch broadly here
         # because pyarrow and fastparquet raise different exception types for
         # corrupt files. The failure is non-fatal: returning None triggers a
         # fresh download.

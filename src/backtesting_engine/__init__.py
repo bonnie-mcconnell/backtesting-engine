@@ -26,6 +26,7 @@ For cost sensitivity analysis:
                                    slippage_factors=[0.0, 0.05])
 """
 
+from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
 from backtesting_engine.dashboard import build_dashboard
 from backtesting_engine.data.ingestion import load_data
 from backtesting_engine.data.validator import validate_data
@@ -42,8 +43,10 @@ from backtesting_engine.models import (
     Trade,
     WindowResult,
 )
-from backtesting_engine.strategy.base import BaseStrategy
+from backtesting_engine.reality_check import build_candidate_return_matrix, white_reality_check
+from backtesting_engine.strategy.base import BaseStrategy, returns_from_signals
 from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
@@ -53,7 +56,9 @@ __all__ = [
     "calculate_metrics",
     # Strategies
     "BaseStrategy",
+    "returns_from_signals",
     "MovingAverageStrategy",
+    "MomentumStrategy",
     "KalmanFilterStrategy",
     # Execution
     "ExecutionConfig",
@@ -70,4 +75,10 @@ __all__ = [
     "WindowResult",
     # Visualisation
     "build_dashboard",
+    # Benchmark
+    "compute_benchmark",
+    "BenchmarkResult",
+    # Statistical testing
+    "white_reality_check",
+    "build_candidate_return_matrix",
 ]

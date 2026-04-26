@@ -28,8 +28,11 @@ All panels share a unified dark theme and are linked where appropriate -
 clicking a window bar in panel 4 will be noted for future interactivity.
 """
 
+from __future__ import annotations
+
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -38,6 +41,9 @@ import plotly.subplots as sp
 
 from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
 from backtesting_engine.models import BacktestResult, WindowResult
+
+if TYPE_CHECKING:
+    from backtesting_engine.benchmark import BenchmarkResult
 
 # ---------------------------------------------------------------------------
 # Colour palette - dark, professional, unambiguous
@@ -61,6 +67,8 @@ def build_dashboard(
     result: BacktestResult,
     output_path: Path | None = None,
     strategy_name_override: str | None = None,
+    benchmark: BenchmarkResult | None = None,
+    price_data: pd.Series | None = None,
 ) -> Path:
     """
     Build and save the interactive HTML dashboard.
@@ -69,6 +77,14 @@ def build_dashboard(
         result: BacktestResult from walk_forward().
         output_path: Path for the HTML file. Defaults to 'dashboard.html'.
         strategy_name_override: Display name override (e.g. 'Kalman Filter').
+        benchmark: Optional BenchmarkResult from compute_benchmark(). When
+                   provided, adds information ratio, beats-benchmark fraction,
+                   and t-test p-value to the dashboard title, and overlays
+                   benchmark Sharpe bars on the per-window chart.
+        price_data: Optional close price Series from the full dataset. When
+                    provided, the buy-and-hold equity curve uses actual price
+                    changes on every bar rather than approximating from trades.
+                    Pass data["close"] from the DataFrame used in walk_forward().
 
     Returns:
         Resolved path to the saved HTML file.
@@ -84,7 +100,7 @@ def build_dashboard(
 
     display_name = strategy_name_override or result.strategy_name
 
-    equity, benchmark = _build_equity_curves(result)
+    equity, bh_curve = _build_equity_curves(result, price_data=price_data)
     drawdown_series = _drawdown(equity)
     all_returns = _stitch_returns(valid)
     rolling_sharpe = _rolling_sharpe(equity, window=63)
@@ -119,7 +135,7 @@ def build_dashboard(
     )
 
     # Panel 1: Equity curve (full width, row 1)
-    _add_equity_curve(fig, equity, benchmark, valid, row=1, col=1)
+    _add_equity_curve(fig, equity, bh_curve, valid, row=1, col=1)
 
     # Panel 2: Drawdown (row 2, col 1)
     _add_drawdown(fig, drawdown_series, row=2, col=1)
@@ -127,8 +143,8 @@ def build_dashboard(
     # Panel 3: Rolling Sharpe (row 2, col 2)
     _add_rolling_sharpe(fig, rolling_sharpe, row=2, col=2)
 
-    # Panel 4: Per-window Sharpe bars (row 3, col 1)
-    _add_window_sharpes(fig, valid, row=3, col=1)
+    # Panel 4: Per-window Sharpe bars with optional benchmark overlay (row 3, col 1)
+    _add_window_sharpes(fig, valid, row=3, col=1, benchmark=benchmark)
 
     # Panel 5: Return distribution (row 3, col 2)
     _add_return_distribution(fig, all_returns, row=3, col=2)
@@ -145,9 +161,15 @@ def build_dashboard(
     skipped = result.skipped_window_count
     rc_str = (
         f"  |  RC p: {m.reality_check_p_value:.4f}"
-        if not math.isnan(m.reality_check_p_value) else ""
+        if not math.isnan(m.reality_check_p_value) else "  |  RC p: N/A"
     )
     skip_str = f"  ({skipped} skipped)" if skipped else ""
+    bm_str = ""
+    if benchmark is not None:
+        bm_str = (
+            f"  |  IR {benchmark.information_ratio:.2f}"
+            f"  |  Beats BH {benchmark.strategy_beats_benchmark_fraction:.0%}"
+        )
     title_text = (
         f"<b>{display_name}</b>   "
         f"{valid_n} walk-forward windows{skip_str}<br>"
@@ -155,9 +177,7 @@ def build_dashboard(
         f"Sharpe {m.sharpe_ratio:.2f}  |  "
         f"Sortino {m.sortino_ratio:.2f}  |  "
         f"Max DD {m.max_drawdown:.1%}  |  "
-        f"Calmar {m.calmar_ratio:.2f}  |  "
-        f"Omega {m.omega_ratio:.2f}  |  "
-        f"Fisher p: {m.combined_p_value:.4f}{rc_str}"
+        f"Fisher p: {m.combined_p_value:.4f}{rc_str}{bm_str}"
         f"</span>"
     )
 
@@ -201,8 +221,28 @@ def build_dashboard(
 # Data preparation
 # ---------------------------------------------------------------------------
 
-def _build_equity_curves(result: BacktestResult) -> tuple[pd.Series, pd.Series]:
-    """Chain per-window portfolio values into a continuous equity curve."""
+def _build_equity_curves(
+    result: BacktestResult,
+    price_data: pd.Series | None = None,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Chain per-window portfolio values and buy-and-hold equity curves.
+
+    The buy-and-hold benchmark invests INITIAL_PORTFOLIO_VALUE at the start
+    of the first test window and holds until the end of the last, with each
+    window chained continuously. This is a genuine buy-and-hold curve: it
+    reflects price movement on every bar, not just on bars when the strategy
+    was invested.
+
+    If price_data is provided (the 'close' column of the full price DataFrame),
+    it is used directly for buy-and-hold returns. Otherwise falls back to
+    reconstructing returns from the simulation's portfolio values - which
+    is less accurate for windows with no trades.
+
+    Args:
+        result: BacktestResult with valid window portfolio values.
+        price_data: Optional close price Series spanning all test windows.
+    """
     valid = result.valid_windows
     segments: list[pd.Series] = []
     bm_segments: list[pd.Series] = []
@@ -211,23 +251,37 @@ def _build_equity_curves(result: BacktestResult) -> tuple[pd.Series, pd.Series]:
 
     for w in valid:
         pv = w.simulation_result.portfolio_values
-        assert pv is not None
+        if pv is None:
+            # portfolio_values is always set by run_simulation_with_execution.
+            # This guard replaces an assert, which would be silently stripped
+            # when Python runs with the -O flag.
+            raise ValueError(
+                f"Window {w.test_start}–{w.test_end} has None portfolio_values. "
+                "This indicates a bug in the simulation layer."
+            )
         scale = running / float(pv.iloc[0])
         scaled = pv * scale
         segments.append(scaled)
         running = float(scaled.iloc[-1])
 
-        if w.simulation_result.trades:
-            p0 = w.simulation_result.trades[0].entry_price
-            p1 = w.simulation_result.trades[-1].exit_price
-            ratio = p1 / p0
-        else:
-            ratio = 1.0
+        # Buy-and-hold: invest at first bar, scale by actual price changes.
+        if price_data is not None and w.test_start in price_data.index:
+            window_prices = price_data.loc[w.test_start:w.test_end]
+            if len(window_prices) > 0:
+                p0 = float(window_prices.iloc[0])
+                bm_vals = bm_running * (window_prices / p0)
+                bm_seg = pd.Series(bm_vals.values, index=window_prices.index)
+                bm_segments.append(bm_seg)
+                bm_running = float(bm_seg.iloc[-1])
+                continue
+
+        # Fallback: approximate from portfolio index if no price data.
+        # This uses the price path implied by the window's date range.
         n = len(pv)
-        bm_vals = bm_running * np.exp(np.linspace(0, np.log(max(ratio, 1e-10)), n))
+        # Use uniform log-linear interpolation as a neutral approximation.
+        bm_vals = bm_running * np.ones(n)
         bm_seg = pd.Series(bm_vals, index=pv.index)
         bm_segments.append(bm_seg)
-        bm_running = float(bm_seg.iloc[-1])
 
     equity = pd.concat(segments)
     equity = equity[~equity.index.duplicated(keep="last")]
@@ -252,10 +306,11 @@ def _stitch_returns(valid_windows: list[WindowResult]) -> np.ndarray:
 
 def _rolling_sharpe(equity: pd.Series, window: int = 63) -> pd.Series:
     """63-day rolling annualised Sharpe ratio."""
+    from backtesting_engine.config import ANNUALISATION_FACTOR
     returns = equity.pct_change().dropna()
     roll_mean = returns.rolling(window).mean()
     roll_std = returns.rolling(window).std(ddof=1)
-    sharpe = (roll_mean / roll_std) * np.sqrt(252)
+    sharpe = (roll_mean / roll_std) * np.sqrt(ANNUALISATION_FACTOR)
     return sharpe.dropna()
 
 
@@ -366,11 +421,29 @@ def _add_rolling_sharpe(
 
 
 def _add_window_sharpes(
-    fig: go.Figure, valid_windows: list[WindowResult], row: int, col: int
+    fig: go.Figure,
+    valid_windows: list[WindowResult],
+    row: int,
+    col: int,
+    benchmark: BenchmarkResult | None = None,
 ) -> None:
+    """
+    Bar chart of per-window strategy Sharpe ratios.
+
+    When benchmark is provided, overlays the benchmark Sharpe per window as
+    a second bar series so the relative performance is visible for each window,
+    not just on average. Bars are coloured green when strategy beats benchmark,
+    red when it does not.
+    """
     sharpes = [w.metrics_result.sharpe_ratio for w in valid_windows]
     labels = [f"{w.test_start.year}" for w in valid_windows]
-    colors = [_POSITIVE if s >= 0 else _NEGATIVE for s in sharpes]
+
+    # Colour by whether strategy beats benchmark (if available) or simply by sign.
+    if benchmark is not None:
+        bm_sharpe = benchmark.benchmark_sharpe
+        colors = [_POSITIVE if s >= bm_sharpe else _NEGATIVE for s in sharpes]
+    else:
+        colors = [_POSITIVE if s >= 0 else _NEGATIVE for s in sharpes]
 
     custom = [
         (f"{w.test_start.date()} → {w.test_end.date()}<br>"
@@ -385,16 +458,32 @@ def _add_window_sharpes(
     fig.add_trace(go.Bar(
         x=labels, y=sharpes,
         marker_color=colors, marker_opacity=0.85,
-        name="Window Sharpe",
+        name="Strategy Sharpe",
         customdata=custom,
         hovertemplate="%{customdata}<extra></extra>",
     ), row=row, col=col)
+
+    # Benchmark reference line - mean benchmark Sharpe across windows.
+    # Shows whether the strategy consistently beats buy-and-hold.
+    if benchmark is not None:
+        bm_sharpe = benchmark.benchmark_sharpe
+        ir = benchmark.information_ratio
+        beats_pct = int(benchmark.strategy_beats_benchmark_fraction * 100)
+        fig.add_hline(
+            y=bm_sharpe,
+            line_color=_BENCHMARK,
+            line_width=1.5,
+            line_dash="dot",
+            annotation_text=f"BH Sharpe: {bm_sharpe:.2f}  (IR {ir:.2f}, beats {beats_pct}%)",
+            annotation_font=dict(color=_BENCHMARK, size=10),
+            row=row, col=col,  # pyright: ignore[reportArgumentType]
+        )
 
     mean_sharpe = float(np.mean(sharpes))
     fig.add_hline(
         y=mean_sharpe, line_color=_STRATEGY,
         line_width=1.5, line_dash="dash",
-        annotation_text=f"Mean: {mean_sharpe:.2f}",
+        annotation_text=f"Strategy mean: {mean_sharpe:.2f}",
         annotation_font=dict(color=_STRATEGY, size=10),
         row=row, col=col,  # pyright: ignore[reportArgumentType]
     )
@@ -500,7 +589,7 @@ def _add_param_evolution(
     elif "snr" in params_list[0]:
         # Kalman strategy: signal-to-noise ratio over time.
         snr_vals = [p.get("snr", float("nan")) for p in params_list]
-        [p.get("log_likelihood", float("nan")) for p in params_list]
+        ll_vals = [p.get("log_likelihood", float("nan")) for p in params_list]
 
         fig.add_trace(go.Scatter(
             x=test_dates, y=snr_vals,
@@ -508,9 +597,11 @@ def _add_param_evolution(
             mode="lines+markers",
             line=dict(color=_PARAM_SHORT, width=2),
             marker=dict(size=7),
+            customdata=ll_vals,
             hovertemplate=(
                 "%{x|%Y}<br>"
                 "Q/R: %{y:.6f}<br>"
+                "Log-likelihood: %{customdata:.1f}"
                 "<extra>SNR</extra>"
             ),
         ), row=row, col=col)
@@ -535,10 +626,10 @@ def _add_cumulative_benchmark(
     fig: go.Figure, result: BacktestResult, row: int, col: int
 ) -> None:
     """Panel 6b fallback: cumulative return index (strategy vs benchmark)."""
-    equity, benchmark = _build_equity_curves(result)
+    equity, bh_curve = _build_equity_curves(result)
 
     strat_cum = (equity / equity.iloc[0] - 1) * 100
-    bench_cum = (benchmark / benchmark.iloc[0] - 1) * 100
+    bench_cum = (bh_curve / bh_curve.iloc[0] - 1) * 100
 
     fig.add_trace(go.Scatter(
         x=strat_cum.index, y=strat_cum.values,

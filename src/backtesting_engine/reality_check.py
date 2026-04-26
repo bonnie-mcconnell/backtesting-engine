@@ -14,12 +14,22 @@ classical multiple comparisons problem.
 
 White's Reality Check corrects for this. The null hypothesis is:
 
-    H₀: No strategy in the universe has performance superior to a benchmark
-        (here: zero excess return, i.e. the benchmark is cash).
+    H₀: No strategy in the universe has performance superior to a benchmark.
 
-The test statistic is the maximum mean excess return across all k strategies
-in the universe. The p-value is the fraction of bootstrap replications in
-which the maximum bootstrapped statistic exceeds the observed maximum.
+White (2000) uses zero return (cash) as the benchmark, which is what this
+implementation does. This means a small RC p-value indicates at least one
+strategy beats cash - not necessarily that it beats buy-and-hold.
+
+For equity trend-following strategies that are frequently in cash between
+signals, this is the natural null: does the strategy add value over doing
+nothing? If you want to test against buy-and-hold, you would subtract the
+buy-and-hold return from each candidate's return series before passing to
+this function. That test is stricter and more appropriate for evaluating
+active management. See benchmark.py for the buy-and-hold comparison.
+
+The test statistic is the maximum mean excess return across all k strategies.
+The p-value is the fraction of bootstrap replications in which the centred
+maximum exceeds the observed maximum.
 
 Implementation
 --------------
@@ -93,38 +103,46 @@ def white_reality_check(
     if n_periods < 2:
         raise ValueError("Need at least 2 time periods to bootstrap.")
 
-    # Mean excess returns for each candidate.
-    # We use excess return above zero (benchmark = cash).
+    # Mean excess returns for each candidate over the observed period.
+    # Benchmark = cash (zero return), so excess return is just the raw return.
     mean_returns = candidate_returns.mean(axis=0)   # shape (k,)
 
     # Observed test statistic: maximum mean return across all candidates.
+    # This is what White (2000) calls V̄_k (equation 3.2).
     observed_max = float(mean_returns.max())
 
     # Stationary bootstrap: variable block lengths drawn from Geometric(1/b).
     b = max(1, int(np.sqrt(n_periods)))
     rng = np.random.default_rng(seed)
-    p = 1.0 / b   # geometric parameter
+    p = 1.0 / b   # geometric parameter → mean block length = b
 
     count_exceeds = 0
     for _ in range(n_bootstrap):
-        # Build a bootstrap resample of length T using stationary bootstrap.
+        # Draw one stationary bootstrap resample of the return matrix.
         resampled = _stationary_bootstrap_resample(candidate_returns, p, n_periods, rng)
 
-        # Bootstrap statistic: max mean return across candidates in this resample.
-        boot_means = resampled.mean(axis=0)
-
-        # Reality Check uses the CENTRED bootstrap statistic:
-        # boot_stat = max_j [mean(boot_j) - mean(original_j)]
-        # Centering removes the mean of the original series so that under H₀
-        # the bootstrap distribution is centred at zero.
-        boot_stat = float((boot_means - mean_returns).max())
-        if boot_stat >= observed_max - mean_returns.max():
+        # The Reality Check uses the CENTRED bootstrap statistic (White eq. 3.3):
+        #
+        #   V̄*_k = max_j [ mean(boot_j) - mean(original_j) ]
+        #
+        # Subtracting mean_returns(j) centres each column's bootstrap distribution
+        # at zero under H₀. The p-value is the fraction of bootstrap iterations
+        # where V̄*_k >= observed_max (the original un-centred max mean return).
+        #
+        # Why this gives correct coverage under H₀:
+        # When all strategies have zero true expected return, mean_returns ≈ 0
+        # and observed_max ≈ 0. The centred bootstrap statistic V̄*_k is the
+        # maximum of k approximately-zero-mean distributions, and p = P(V̄*_k >= 0)
+        # converges to about 0.5. When the best strategy has genuinely positive
+        # expected return, observed_max is large and V̄*_k rarely exceeds it,
+        # so p is small - evidence of genuine edge.
+        #
+        # Note: comparing against observed_max (not 0) is correct. The centring
+        # shifts the bootstrap distribution, not the threshold.
+        boot_stat = float((resampled.mean(axis=0) - mean_returns).max())
+        if boot_stat >= observed_max:
             count_exceeds += 1
 
-    # Note: under H₀, observed_max - mean_returns.max() = 0, so we are
-    # computing P(max centred bootstrap statistic >= 0), which should be ~0.5
-    # when H₀ holds. A small p-value means the observed maximum is in the
-    # right tail of the null distribution - evidence of genuine edge.
     return float(count_exceeds / n_bootstrap)
 
 
@@ -150,7 +168,6 @@ def _stationary_bootstrap_resample(
     Returns:
         Resampled array of shape (T, k).
     """
-    data.shape[1]
     # Tile data twice so circular indexing never goes out of bounds.
     circular = np.vstack([data, data])
 

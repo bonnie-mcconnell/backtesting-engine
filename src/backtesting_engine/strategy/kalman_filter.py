@@ -85,13 +85,13 @@ from backtesting_engine.strategy.base import BaseStrategy
 
 # Numerical floor for variances - prevents degenerate filters where Q or R
 # collapse to zero and the Kalman gain becomes undefined.
-_MIN_VARIANCE = 1e-8
+_MIN_VARIANCE: float = 1e-8
 
 # Nelder-Mead convergence tolerances. Tighter than scipy defaults to avoid
 # premature termination on flat likelihood surfaces.
-_OPTIM_XATOL = 1e-6
-_OPTIM_FATOL = 1e-6
-_OPTIM_MAXITER = 2000
+_OPTIM_XATOL: float = 1e-6
+_OPTIM_FATOL: float = 1e-6
+_OPTIM_MAXITER: int = 2000
 
 
 class KalmanFilterStrategy(BaseStrategy):
@@ -134,6 +134,22 @@ class KalmanFilterStrategy(BaseStrategy):
     # ------------------------------------------------------------------
     # BaseStrategy interface
     # ------------------------------------------------------------------
+
+    def context_window_size(self) -> int:
+        """
+        Return the warmup window for Kalman filter initialisation.
+
+        The Kalman filter initialises from the first observation it receives
+        and converges to its steady-state gain within roughly 20–50 bars,
+        depending on Q/R. Providing 50 context bars ensures the filter state
+        is stable before signals are evaluated on test data.
+
+        50 is conservative — the filter converges within ~20 bars for typical
+        Q/R values — but the cost of extra context is negligible and the
+        protection against poorly initialised states at window boundaries
+        is worth it.
+        """
+        return 50
 
     def fit(self, train_data: pd.DataFrame) -> "KalmanFilterStrategy":
         """
@@ -215,11 +231,15 @@ class KalmanFilterStrategy(BaseStrategy):
         """
         Run the filter on context + test data, return only test signals.
 
-        Unlike the moving average strategy, the Kalman filter naturally
-        handles warmup because the filter state initialises from the first
-        observation and converges within a few bars. Context data still
-        improves initialisation by providing a better prior for the filter
-        state at the start of the test window.
+        The Kalman filter naturally handles warmup because the filter state
+        initialises from the first observation and converges within a few bars.
+        Context data improves initialisation by providing a better prior for
+        the filter state at the test window start.
+
+        Position carry-over: if the filter velocity is positive at the end of
+        the context window (strategy is long), a buy signal is injected at the
+        first test bar. Without this, a long position established during warmup
+        would be silently dropped and the strategy would start flat.
 
         Args:
             context_data: Tail of training data for filter initialisation.
@@ -230,7 +250,19 @@ class KalmanFilterStrategy(BaseStrategy):
         """
         combined = pd.concat([context_data, test_data])
         all_signals = self.generate_signals(combined)
-        return all_signals.loc[test_data.index]
+        test_signals = all_signals.loc[test_data.index].copy()
+
+        # Detect filter velocity at the context/test boundary.
+        # If velocity > 0 at the last context bar, inject a buy at test bar 0
+        # to carry the long position forward.
+        log_prices_context = np.log(context_data["close"].to_numpy(dtype=float))
+        filtered_context = _kalman_filter(log_prices_context, self.q_, self.r_)
+        if len(filtered_context) >= 2:
+            velocity_at_boundary = filtered_context[-1] - filtered_context[-2]
+            if velocity_at_boundary > 0 and test_signals.iloc[0] == 0:
+                test_signals.iloc[0] = 1  # carry long position forward
+
+        return test_signals
 
     def active_params(self) -> dict[str, object]:
         """
@@ -282,9 +314,23 @@ def _kalman_filter(log_prices: np.ndarray, q: float, r: float) -> np.ndarray:
     n = len(log_prices)
     filtered = np.empty(n)
 
-    # Initialise: diffuse prior - state mean = first observation, large variance.
+    # Prior: diffuse initialisation.
+    # mu_0 = first observation (best available prior mean with no other information).
+    # P_0  = 1.0 — a weakly informative prior variance scaled to log-price space.
+    #
+    # Why 1.0 and not a truly diffuse prior (P → ∞)?
+    # In log-price space, a daily log-return of 0.01 (1%) is typical for equities.
+    # A prior variance of 1.0 means the prior 95% interval is ±2 log-price units,
+    # corresponding to a price range of roughly [e^-2, e^2] ≈ [0.13×, 7.4×] the
+    # starting price — which is uninformative for any realistic asset.
+    #
+    # In the limit P → ∞ the first-bar Kalman gain K → 1, so the filter simply
+    # sets μ[0] = y[0] and P[0] = R. With P=1 and typical calibrated R~1e-2,
+    # the first-bar K = (1+Q)/(1+Q+R) ≈ 0.99 — practically identical to the
+    # diffuse limit. Any residual initialisation effect decays within ~5 bars.
+    # The context window (50 bars) eliminates this effect entirely for test signals.
     mu = log_prices[0]
-    p = 1.0   # prior variance; large relative to typical Q values
+    p = 1.0
 
     for t in range(n):
         # Predict step

@@ -64,10 +64,14 @@ ANNUALISATION_FACTOR: int = 252
 # ---------------------------------------------------------------------------
 
 RISK_FREE_RATE: float = 0.0
-# Daily risk-free rate subtracted from returns before Sharpe/Sortino computation.
-# Set to 0.0 as a conservative default - subtracting a positive rate can only
-# reduce the apparent Sharpe, so zero is the most favourable assumption and
-# produces an upper bound. Change to e.g. 0.05 / 252 for a 5% annual rate.
+# Daily risk-free rate subtracted from excess return before Sharpe/Sortino.
+# Zero is the standard default for strategy development for two reasons:
+#   1. It makes results comparable across time periods with different rate regimes.
+#   2. For a long-short or market-neutral strategy the risk-free rate is genuinely
+#      the correct hurdle; for a long-only strategy it understates the hurdle, but
+#      using zero is the more conservative assumption for a trend-following strategy
+#      that is frequently in cash between signals.
+# To use a 5% annual rate: set to 0.05 / 252 ≈ 0.000198.
 
 # ---------------------------------------------------------------------------
 # Monte Carlo block bootstrap significance test
@@ -98,10 +102,3 @@ START_DATE: str = "1993-01-01"
 # SPY inception date, maximising available history for walk-forward windows.
 # Earlier dates would require switching to a different index proxy.
 
-# ---------------------------------------------------------------------------
-# Visualisation
-# ---------------------------------------------------------------------------
-
-FIGURE_DPI: int = 150
-# High enough for crisp display on retina screens; low enough to keep
-# file sizes manageable for README embedding.

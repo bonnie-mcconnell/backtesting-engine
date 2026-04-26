@@ -1,6 +1,6 @@
 [project]
 name = "backtesting-engine"
-version = "0.3.0"
+version = "0.5.4"
 description = "Walk-forward backtesting with Kalman filter, White's Reality Check, and interactive dashboards"
 authors = [
     {name = "Bonnie McConnell", email = "bonniep.mcconnell@gmail.com"}
@@ -12,7 +12,6 @@ dependencies = [
     "pandas (>=2.0.0,<4.0.0)",
     "numpy (>=1.24.0,<3.0.0)",
     "scipy (>=1.10.0,<2.0.0)",
-    "matplotlib (>=3.7.0,<4.0.0)",
     "plotly (>=5.0.0,<6.0.0)",
 ]
 
@@ -28,6 +27,12 @@ ruff = ">=0.1.0,<1.0.0"
 backtesting-engine = "backtesting_engine.main:main"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-m 'not network'"
+markers = [
+    "network: marks tests that require network access (deselect with '-m not network')",
+]
 filterwarnings = [
     "ignore::RuntimeWarning:numpy",
     "ignore::DeprecationWarning:yfinance",

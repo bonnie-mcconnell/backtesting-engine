@@ -3,7 +3,7 @@ Buy-and-hold benchmark comparison.
 
 The standard critique of any active strategy is: does it beat just holding
 the index? Beating buy-and-hold on raw Sharpe over one historical period is
-not the right bar — buy-and-hold has survivorship bias, the comparison
+not the right bar - buy-and-hold has survivorship bias, the comparison
 ignores the path dependency of active strategies, and a single Sharpe comparison
 has no notion of statistical significance.
 
@@ -62,7 +62,7 @@ class BenchmarkResult:
     benchmark_sortino : float
         Mean per-window Sortino for buy-and-hold.
     benchmark_max_drawdown : float
-        Worst per-window drawdown for buy-and-hold. Not averaged — the worst
+        Worst per-window drawdown for buy-and-hold. Not averaged - the worst
         single-window drawdown is the relevant risk figure.
     information_ratio : float
         Annualised mean active return divided by annualised active return volatility.
@@ -105,7 +105,7 @@ def compute_benchmark(
     test window and closed at the end, with the same transaction cost applied on
     entry and exit.
 
-    The information ratio is computed from per-bar active returns — the difference
+    The information ratio is computed from per-bar active returns - the difference
     between the strategy's daily return and the buy-and-hold daily return on each
     bar. This is the Grinold & Kahn (2000) definition: IR = mean(active) / std(active)
     annualised by sqrt(252). Using per-window Sharpe differences instead would give

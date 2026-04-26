@@ -85,16 +85,23 @@ def _sharpe(returns_array: np.ndarray) -> float:
 
 def _sortino(returns_array: np.ndarray) -> float:
     """
-    Annualised Sortino ratio: mean excess return divided by downside volatility.
+    Annualised Sortino ratio: mean excess return divided by downside deviation.
 
-    Downside volatility is the standard deviation of returns that fall below
-    the risk-free rate (not below zero). This is the theoretically correct
-    definition: the risk-free rate is the threshold investors care about
-    missing, not zero.
+    Downside deviation is the square root of the mean squared negative excess
+    return - the RMS of returns that fall below the threshold. This is the
+    standard definition from Sortino & van der Meer (1991):
+
+        downside_deviation = sqrt( mean( min(r_t - T, 0)^2 ) )
+
+    where T is the threshold (here: RISK_FREE_RATE).
+
+    This differs from using std(downside_returns): std measures dispersion
+    *among* negative returns (around their mean), while downside deviation
+    measures the magnitude of negative returns *relative to zero*. For a
+    strategy with small, consistent losses, std approaches zero (giving an
+    inflated Sortino) while downside deviation correctly stays large.
 
     Returns float('inf') if there are no below-threshold returns.
-    Returns 0.0 if mean excess return is zero but downside volatility is
-    positive (strategy matches risk-free return with downside risk).
 
     Args:
         returns_array: Daily returns as a NumPy array.
@@ -103,22 +110,22 @@ def _sortino(returns_array: np.ndarray) -> float:
         Annualised Sortino ratio.
     """
     excess = returns_array - RISK_FREE_RATE
-    downside = excess[excess < 0.0]
 
-    if len(downside) == 0:
+    # All returns below the threshold - clip to their negative part.
+    negative_excess = np.minimum(excess, 0.0)
+
+    if np.all(negative_excess == 0.0):
+        # No below-threshold returns - downside deviation is zero, Sortino = inf.
         return float("inf")
 
-    # ddof=1 with a single value yields NaN. Guard explicitly.
-    if len(downside) == 1:
-        # With only one data point we cannot estimate variance; return 0.0
-        # rather than NaN or inf, as neither would be meaningful.
-        return 0.0
+    # Downside deviation: RMS of negative excess returns.
+    # Uses mean (not ddof=1) because we want E[min(r-T,0)^2], not a sample correction.
+    downside_dev = float(np.sqrt(np.mean(negative_excess ** 2)))
 
-    downside_std = downside.std(ddof=1)
-    if downside_std < 1e-10:
+    if downside_dev < 1e-10:
         return float("inf")
 
-    return float(excess.mean() / downside_std * np.sqrt(ANNUALISATION_FACTOR))
+    return float(excess.mean() / downside_dev * np.sqrt(ANNUALISATION_FACTOR))
 
 
 def _max_drawdown(returns_array: np.ndarray) -> float:
@@ -151,6 +158,14 @@ def _calmar(returns_array: np.ndarray) -> float:
     """
     Annualised Calmar ratio: annualised return divided by absolute max drawdown.
 
+    Annualised return uses the geometric (compound) formula:
+        annualised = prod(1 + r_t)^(252/n) - 1
+
+    This is the exact annualised return from the actual return path.
+    The alternative formula (1 + mean_daily)^252 compounds the arithmetic
+    mean, which overstates annualised return by up to several percentage
+    points when daily volatility is high (Jensen's inequality).
+
     Returns float('inf') if max drawdown is zero (no peak-to-trough decline).
 
     Args:
@@ -159,11 +174,17 @@ def _calmar(returns_array: np.ndarray) -> float:
     Returns:
         Annualised Calmar ratio.
     """
-    annualised_return = (1.0 + float(np.mean(returns_array))) ** ANNUALISATION_FACTOR - 1.0
+    n = len(returns_array)
+    if n == 0:
+        return 0.0
+    # Geometric annualised return: compound all daily returns, then annualise.
+    # Clip returns to prevent log(0) on -100% days.
+    cumulative = float(np.prod(1.0 + np.clip(returns_array, -0.9999, None)))
+    annualised_return = cumulative ** (ANNUALISATION_FACTOR / n) - 1.0
     max_dd = abs(_max_drawdown(returns_array))
     if max_dd < 1e-10:
         return float("inf")
-    return annualised_return / max_dd
+    return float(annualised_return / max_dd)
 
 
 def _omega(returns_array: np.ndarray, threshold: float = RISK_FREE_RATE) -> float:

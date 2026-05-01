@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.5] - 2026-05-01
+
+### Fixed
+- `tests/test_strategy.py` (`TestContextWindowSize::test_walk_forward_does_not_need_isinstance_for_context`):
+  Used a relative `pathlib.Path("src/backtesting_engine/walk_forward.py")` that resolves
+  to the working directory at test-run time. When pytest is invoked from any directory
+  other than the repo root (as GitHub Actions does on a fresh checkout), the path does
+  not exist and the test raises `FileNotFoundError` instead of testing anything.
+  Fixed by resolving relative to `__file__`:
+  `Path(__file__).parent.parent / "src/backtesting_engine/walk_forward.py"`.
+  All 243 tests now pass regardless of the working directory pytest is launched from.
+
 ## [0.5.4] - 2026-04-26
 
 ### Removed
@@ -237,7 +249,7 @@
 - `tests/test_reality_check.py`: 3 new tests in `TestRealityCheckCentering`.
 - `tests/test_data/test_ingestion.py`: 3 new tests for ex-dividend reconciliation.
 
-## [0.3.0] - 2026-04-17
+## [0.3.0] - 2026-04-19
 
 ### Added
 - Interactive HTML dashboards (Plotly): equity curve, drawdown, rolling Sharpe,
@@ -249,7 +261,7 @@
   data snooping across the MA parameter grid.
 - Fisher combined p-value replaces averaged per-window p-values.
 
-## [0.2.0] - 2026-04-15
+## [0.2.0] - 2026-04-17
 
 ### Added
 - Kalman filter strategy with MLE calibration of Q and R per training window.

@@ -309,7 +309,7 @@ class TestContextWindowSize:
         """
         import ast
         import pathlib
-        src = pathlib.Path("src/backtesting_engine/walk_forward.py").read_text()
+        src = (pathlib.Path(__file__).parent.parent / "src/backtesting_engine/walk_forward.py").read_text()
         tree = ast.parse(src)
         # Collect all import names from the walk_forward module
         imported_names: list[str] = []

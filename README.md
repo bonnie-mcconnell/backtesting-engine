@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/bonnie-mcconnell/backtesting-engine/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
-![Version](https://img.shields.io/badge/version-0.5.4-blue)
+![Version](https://img.shields.io/badge/version-0.5.5-blue)
 ![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
 
 A backtesting engine that answers the question most backtesting tutorials skip: did the strategy have a genuine statistical edge, or did it just happen to work on this particular slice of history?
@@ -96,6 +96,10 @@ All three strategies were evaluated on 30 years of SPY (1993–2024) with realis
 | Buy & Hold | 0.54 | 0.71 | −50.8% | - | - | - |
 
 **Fisher p** is the combined significance across all ~29 walk-forward windows. Values above 0.05 mean the performance is consistent with noise. **RC p** is White's Reality Check p-value - the data-snooping corrected version that accounts for testing 112 (MA) or 7 (momentum) parameter combinations. All RC p-values are above 0.05. The Kalman filter has no RC p-value because MLE calibration is not a search over a discrete candidate universe.
+
+**Note on the Reality Check null:** RC p tests whether any strategy beats cash (zero return), not whether it beats buy-and-hold. A small RC p would mean "the strategy adds value over doing nothing" - a weaker claim than beating the index. The information ratio and paired t-test in the benchmark comparison are the correct metrics for the harder question. All three strategies fail both tests.
+
+The Kalman filter's calibrated signal-to-noise ratio (Q/R) is the most interpretable output beyond the headline metrics. It shifts visibly across the 30-year window: SNR rises during the 2000–2002 and 2008–2009 drawdowns (the filter becomes more reactive, tracking price more closely) and compresses during the low-volatility 2012–2019 expansion (the filter smooths more aggressively). This regime-dependence is what the parameter evolution panel in the dashboard surfaces - and it is the specific property that a fixed 50/200 MA cannot provide.
 
 The result itself is the point. SPY buy-and-hold has a higher Sharpe than any of these trend-following strategies under realistic execution. The infrastructure for reaching that conclusion honestly - with no look-ahead bias, proper multiple-comparison correction, and cost sensitivity analysis - is what this project is actually about.
 

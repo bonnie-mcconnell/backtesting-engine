@@ -146,8 +146,7 @@ config ← models ← metrics / execution ← strategy ← walk_forward ← benc
                                                                   ← main
 ```
 
-Nothing in a lower layer imports from a higher one. Circular imports signal a
-design problem, not something to paper over with `TYPE_CHECKING`.
+Nothing in a lower layer imports from a higher one at runtime. One intentional exception: `execution.py` imports `BaseStrategy` under `TYPE_CHECKING` with `from __future__ import annotations`. At runtime this import is never evaluated, so there is no circular dependency. At type-check time, mypy sees the full type. The reason this guard is needed is that `strategy/__init__.py` re-exports from `execution.py`, which would create a genuine cycle if `execution.py` imported from `strategy/` unconditionally. `TYPE_CHECKING` is the correct resolution here - not a workaround, but the standard Python mechanism for exactly this pattern.
 
 ---
 

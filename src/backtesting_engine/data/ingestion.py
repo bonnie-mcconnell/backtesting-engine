@@ -62,8 +62,8 @@ def load_data(
     Returns:
         DataFrame with DatetimeIndex and columns:
             close  - adjusted closing price (float64)
-            high   - unadjusted daily high  (float64)
-            low    - unadjusted daily low   (float64)
+            high   - adjusted daily high  (float64)
+            low    - adjusted daily low   (float64)
             volume - daily share volume     (float64, if available)
 
     Raises:
@@ -125,8 +125,9 @@ def _save_to_cache(data: pd.DataFrame, ticker: str, start_date: str) -> None:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _cache_path(ticker, start_date)
         data.to_parquet(path)
-    except OSError as e:
-        # Disk full, permissions, or path error. Non-fatal: caller has the data.
+    except Exception as e:
+        # Disk full, permissions, missing parquet engine, or path error.
+        # Non-fatal: caller has the data.
         warnings.warn(
             f"Cache write failed for {ticker}/{start_date} ({e}). "
             "Data will be re-downloaded on the next run.",
@@ -169,6 +170,11 @@ def _download_and_clean(ticker: str, start_date: str) -> pd.DataFrame:
         "High": "high",
         "Low": "low",
     })
+
+    if "Close" in available:
+        adjustment = raw["Adj Close"] / raw["Close"]
+        data["high"] = raw["High"] * adjustment
+        data["low"] = raw["Low"] * adjustment
 
     if "Volume" in available:
         data["volume"] = raw["Volume"]

@@ -1,6 +1,112 @@
 # Changelog
 
-## [0.5.5] - 2026-05-01
+## [0.6.2] - 2026-05-06
+
+### Fixed
+- **`test_final_fixes.py` version reference corrected**: docstring said "v0.6.1 → v0.6.2"
+  but the version was never bumped. Version is now 0.6.2.
+- **Last hardcoded `42` in docstring removed**: `execution.py` `cost_sensitivity_sweep`
+  docstring said "Defaults to 42 (matching BLOCK_BOOTSTRAP_SEED)" - replaced with
+  "Defaults to BLOCK_BOOTSTRAP_SEED (config.py)" so no magic number appears anywhere.
+
+### Added
+- **`format_params()` method on `BaseStrategy`**: eliminates hard-coded strategy knowledge
+  from `main.py`'s `_format_params()`. Each strategy now owns its own parameter
+  formatting. MA returns `MA(50/200)`, Kalman returns `SNR=1.23e-03`, Momentum returns
+  `MOM(90)`. New strategies implement this method; `main.py` is unchanged.
+- **Nested `fmt` function in `_print_comparison.best3_p()` eliminated**: inlined
+  directly using a conditional expression. No more functions defined inside functions
+  inside functions.
+
+### Documentation
+- **`docs/methodology.md` RC/signal-returns paragraph clarified**: the old wording
+  "execution has not yet been applied" implied signal returns are mandatory for RC.
+  Corrected to explain it is a deliberate design choice (testing pre-cost alpha
+  capacity) and what the tradeoff is.
+- **README badge: blank line between title and badges removed** for correct GitHub rendering.
+
+## [0.6.1] - 2026-05-06
+
+### Fixed (correctness)
+- **`_flat_cash_metrics()` sortino and omega corrected**: was returning `sortino=inf`
+  and `omega=inf`, which `mean_metric()` silently excluded from summary means.
+  Result: flat-cash windows were dropped from aggregate Sortino/Omega, overstating
+  both metrics. Fixed: `sortino=0.0` (zero return → zero risk-adjusted value) and
+  `omega=1.0` (neutral break-even). Both now correctly participate in summary means.
+- **`cost_sensitivity_sweep()` ignores `--seed`**: the sweep's `_sweep_worker` and
+  `cost_sensitivity_sweep()` had no `bootstrap_seed` parameter. Cost sweep results
+  always used the hardcoded config default regardless of `--seed`. Fixed: `bootstrap_seed`
+  parameter added to both, defaulting to `BLOCK_BOOTSTRAP_SEED` (not magic `42`),
+  and forwarded to every `walk_forward()` call in the sweep.
+
+### Improved (code quality)
+- **`BLOCK_BOOTSTRAP_SEED` moved to module-level import in `main.py`**: was imported
+  inside `main()` function body for no reason. All module-level constants now imported
+  at the top of the file.
+- **`_fmt` nested function eliminated**: was defined inside `_print_summary()` on every
+  call. Replaced with module-level `_fmt_metric()` used by both `_print_summary()` and
+  `_print_comparison()` (which had its own duplicate `_fmt_val` nested function).
+- **Magic seed `42` replaced with `BLOCK_BOOTSTRAP_SEED`** in `cost_sensitivity_sweep()`
+  and `_run_cost_sensitivity()` default parameter values.
+- **Double blank line inside `cost_sensitivity_sweep()`** removed.
+- **`_run_cost_sensitivity` and `cost_sensitivity_sweep` docstrings** updated to document
+  `bootstrap_seed` parameter.
+
+### Documentation
+- **CI badge added to README**: `[![CI](…)]` badge gives reviewers immediate visual
+  confirmation tests pass before they read a single line of code.
+- **`docs/methodology.md`**: new "Verifying results are not seed-dependent" section
+  explains how to run multi-seed validation and what stable vs marginal results look like.
+- **`docs/reproducibility.md`**: frozen command now includes `--seed 42`.
+- **`Makefile` `run-frozen` target**: updated to include `--seed 42`.
+- **`mean_metric` docstring** updated to note flat-cash windows no longer produce `inf`.
+
+## [0.6.0] - 2026-05-06
+
+### Fixed (correctness)
+- **`--seed` CLI flag now functional**: `--seed N` previously parsed the argument
+  but never used it. The seed is now threaded through `walk_forward(bootstrap_seed=)`
+  → `calculate_metrics(seed=)` → `_monte_carlo_p_value(seed=)` and
+  `white_reality_check(seed=)`. Results are fully reproducible with an explicit seed.
+- **`ExecutionConfig` defaults aligned with CLI/README**: the dataclass previously
+  defaulted to `slippage_factor=0.0, signal_delay=0` while the CLI defaulted to
+  `--slippage 0.05 --delay 1`. Programmatic use now gets the same conservative
+  execution model as the CLI. Zero-friction configs must be explicit:
+  `ExecutionConfig(slippage_factor=0.0, signal_delay=0)`.
+- **Exposure fraction uses trade dates, not portfolio value heuristic**: the old
+  implementation detected in-market bars by checking `abs(portfolio_change) > threshold`.
+  On a quiet day with 0.08% SPY movement a fully-invested portfolio falls below any
+  reasonable threshold, giving systematically understated exposure. The fix counts
+  bars in `[entry_date, exit_date]` for each trade exactly.
+- **`hasattr` guard in `_trade_diagnostics` removed**: `hasattr(t.exit_date, "days")`
+  is always `False` (Timestamp has no `.days`); the second clause was always `True`.
+  The guard filtered nothing and obscured the intent. `pd.Timedelta.days` is always
+  available; the subtraction is unconditional.
+- **Dead "every window skipped" guard replaced**: the old `if not valid: raise` was
+  unreachable after the flat-cash fix (all windows have `skipped=False`). Replaced
+  with a meaningful guard: raises `ValueError` if `total_trades == 0` across all
+  windows, which correctly detects a degenerate strategy.
+- **Stale "skipped" label removed from console output and dashboard**: the per-window
+  table previously printed `[skipped - no trades generated]` for flat-cash windows
+  - which are now valid rows. Dashboard title now reads "flat-cash" not "skipped".
+- **`valid_windows` docstring corrected**: previously said "produced at least one trade"
+  which was wrong after the flat-cash fix. Now accurately documents all windows
+  and shows the explicit filter for traded-only windows.
+
+### Added
+- `bootstrap_seed` parameter on `walk_forward()` - allows per-call seed override
+  without modifying the global `BLOCK_BOOTSTRAP_SEED` config constant.
+- `_flat_cash_metrics()` exported from `walk_forward` module (testable directly).
+- `TestFlatCashMetrics` test class in `test_walk_forward.py`.
+- `test_bootstrap_seed_produces_deterministic_results` - verifies same seed → same
+  combined_p_value and RC p-value every run.
+
+### Changed
+- `test_walk_forward.py` fully rewritten: all `walk_forward` calls now pass
+  `execution=_ZERO_FRICTION` explicitly (zero slippage, zero delay) so close-only
+  synthetic data works with the new conservative `ExecutionConfig` defaults.
+- `CONTRIBUTING.md`: placeholder username updated.
+- README CLI reference: `--seed` documented; hardcoded test count removed.
 
 ### Fixed
 - `tests/test_strategy.py` (`TestContextWindowSize::test_walk_forward_does_not_need_isinstance_for_context`):

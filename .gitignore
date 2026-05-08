@@ -22,4 +22,13 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Generated dashboard and report artefacts - never commit these.
+# Run `make run` or `make run-frozen` to regenerate them locally.
+dashboard_*.html
+cost_sensitivity.html
+results/
+
+# yfinance / backtesting-engine data cache
+.cache/
+
 summary.txt

@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 from backtesting_engine.config import (
+    BLOCK_BOOTSTRAP_SEED,
     INITIAL_PORTFOLIO_VALUE,
     POSITION_SIZE_FRACTION,
     TRANSACTION_COST_RATE,
@@ -73,23 +74,34 @@ class ExecutionConfig:
     """
     Parameters controlling trade execution realism.
 
+    The defaults here match the CLI defaults and the README examples:
+        cost = 0.1% per side (retail ETF brokerage)
+        slippage = 5% of daily high-low range
+        delay = 1 bar (signal on day t, fill on day t+1)
+
+    These defaults are intentionally conservative so that out-of-the-box
+    results reflect realistic execution, not the best-case fill-at-close model.
+
+    For zero-friction comparison (e.g. to verify strategy logic):
+        ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0)
+
     Attributes
     ----------
     transaction_cost_rate : float
         Proportional fee per side (e.g. 0.001 = 0.1%). Applied to both
-        entry and exit. Default matches the engine-wide config.
+        entry and exit.
     slippage_factor : float
         Fraction of the daily high-low range added to buy fills and
         subtracted from sell fills. 0.0 = fill at close (no slippage).
-        0.1 = 10% of the daily range. Default 0.0 for backward compatibility.
+        0.05 = 5% of the daily range, which is conservative for liquid ETFs.
     signal_delay : int
         Number of bars to delay signal execution. 0 = fill at signal bar's
-        close. 1 = fill at next bar's close (standard one-day delay).
-        Default 0 for backward compatibility.
+        close. 1 = fill at next bar's close (standard one-day delay that
+        prevents lookahead bias from using the close that generated the signal).
     """
-    transaction_cost_rate: float = TRANSACTION_COST_RATE
-    slippage_factor: float = 0.0
-    signal_delay: int = 0
+    transaction_cost_rate: float = TRANSACTION_COST_RATE   # 0.001
+    slippage_factor: float = 0.05
+    signal_delay: int = 1
 
     def __post_init__(self) -> None:
         if self.transaction_cost_rate < 0:
@@ -199,10 +211,17 @@ def run_simulation_with_execution(
 
         if position is None and signal == 1:
             # Open long position.
-            position_value = cash * POSITION_SIZE_FRACTION
+            # Size so that cost-inclusive spend (position_value + buy_cost) fits
+            # exactly within available cash.  The naive approach of spending
+            # cash * POSITION_SIZE_FRACTION plus the fee creates negative cash
+            # (slight leverage) on every trade.
+            #   position_value × (1 + cost_rate) = cash × POSITION_SIZE_FRACTION
+            #   position_value = cash × POSITION_SIZE_FRACTION / (1 + cost_rate)
+            available = cash * POSITION_SIZE_FRACTION
+            position_value = available / (1.0 + cost_rate)
             buy_cost = position_value * cost_rate
             shares = position_value / buy_fill
-            cash -= position_value + buy_cost
+            cash -= position_value + buy_cost  # exactly zero cash remaining
             position = _OpenPosition(
                 entry_price=buy_fill,
                 entry_date=date,
@@ -266,6 +285,65 @@ def run_simulation_with_execution(
     return SimulationResult(trades=trades, portfolio_values=portfolio_series, message="")
 
 
+def _sweep_worker(
+    args: tuple[
+        tuple[float, float],   # (cost_rate, slippage_factor)
+        pd.DataFrame,          # data
+        str,                   # strategy class name
+        int,                   # training_window_years
+        int,                   # testing_window_years
+        int,                   # bootstrap_seed
+    ],
+) -> tuple[tuple[float, float], float]:
+    """
+    Module-level worker for ProcessPoolExecutor.
+
+    Nested functions are not picklable on Windows (spawn-based multiprocessing),
+    so this must live at module scope. Receives all state as arguments rather
+    than closing over variables from the enclosing scope.
+
+    The strategy is reconstructed by class name rather than passed as an object
+    to avoid pickling issues with scipy optimizer internal state in KalmanFilterStrategy.
+
+    bootstrap_seed is forwarded to walk_forward() so that cost-sweep results are
+    reproducible when --seed is passed on the CLI.  Without this, the sweep always
+    used the hardcoded config default regardless of --seed.
+    """
+    from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+    from backtesting_engine.strategy.momentum import MomentumStrategy
+    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+    from backtesting_engine.walk_forward import walk_forward
+
+    (cost, slip), data, strategy_name, train_yrs, test_yrs, seed = args
+
+    _strategy_map = {
+        "MovingAverageStrategy": MovingAverageStrategy,
+        "KalmanFilterStrategy": KalmanFilterStrategy,
+        "MomentumStrategy": MomentumStrategy,
+    }
+    strategy_cls = _strategy_map.get(strategy_name)
+    if strategy_cls is None:
+        return (cost, slip), float("nan")
+
+    exec_config = ExecutionConfig(
+        transaction_cost_rate=cost,
+        slippage_factor=slip,
+        signal_delay=1,
+    )
+    try:
+        result = walk_forward(
+            data,
+            strategy_cls(),
+            training_window_years=train_yrs,
+            testing_window_years=test_yrs,
+            execution=exec_config,
+            bootstrap_seed=seed,
+        )
+        return (cost, slip), result.summary_metrics.combined_p_value
+    except ValueError:
+        return (cost, slip), float("nan")
+
+
 def cost_sensitivity_sweep(
     data: pd.DataFrame,
     strategy: BaseStrategy,
@@ -274,6 +352,7 @@ def cost_sensitivity_sweep(
     training_window_years: int = 3,
     testing_window_years: int = 1,
     n_workers: int = 1,
+    bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
 ) -> dict[tuple[float, float], float]:
     """
     Sweep over (cost_rate, slippage_factor) pairs and return Fisher p-values.
@@ -287,10 +366,15 @@ def cost_sensitivity_sweep(
     Set n_workers > 1 to use multiple CPU cores. On a machine with 8+ cores
     a 5×5 grid that takes ~12 minutes serially completes in ~2 minutes.
 
+    Note on parallelism: The worker function (_sweep_worker) is module-level
+    to be picklable on Windows (which uses spawn, not fork). The strategy is
+    reconstructed by class name in each worker to avoid pickling scipy optimizer
+    internal state.
+
     Args:
         data: Full historical OHLCV DataFrame. Must include 'close'.
               'high' and 'low' are required for slippage_factor > 0.
-        strategy: Any BaseStrategy implementation.
+        strategy: Any BaseStrategy implementation (used for class name only in parallel).
         cost_rates: List of transaction cost rates to test.
         slippage_factors: List of slippage fractions to test.
         training_window_years: Years per training window.
@@ -301,48 +385,36 @@ def cost_sensitivity_sweep(
     Returns:
         Dict mapping (cost_rate, slippage_factor) → Fisher p-value.
         NaN if walk_forward raised for that combination (e.g. insufficient data).
+
+    bootstrap_seed is forwarded to every walk_forward() call so that cost-sweep
+    results are reproducible when a fixed seed is desired.  Defaults to
+    BLOCK_BOOTSTRAP_SEED (config.py).
     """
     import os
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    from backtesting_engine.walk_forward import walk_forward  # avoid circular import
-
     if n_workers == -1:
         n_workers = os.cpu_count() or 1
 
+    strategy_name = strategy.__class__.__name__
     pairs = [(c, s) for c in cost_rates for s in slippage_factors]
-
-    def _run_one(args: tuple[float, float]) -> tuple[tuple[float, float], float]:
-        cost, slip = args
-        exec_config = ExecutionConfig(
-            transaction_cost_rate=cost,
-            slippage_factor=slip,
-            signal_delay=1,
-        )
-        try:
-            result = walk_forward(
-                data,
-                strategy,
-                training_window_years=training_window_years,
-                testing_window_years=testing_window_years,
-                execution=exec_config,
-            )
-            return (cost, slip), result.summary_metrics.combined_p_value
-        except ValueError:
-            return (cost, slip), float("nan")
+    worker_args = [
+        ((c, s), data, strategy_name, training_window_years, testing_window_years, bootstrap_seed)
+        for c, s in pairs
+    ]
 
     results: dict[tuple[float, float], float] = {}
 
     if n_workers == 1:
         # Sequential path: simpler, no pickling overhead, easier to debug.
-        for pair in pairs:
-            key, p_val = _run_one(pair)
+        for wargs in worker_args:
+            key, p_val = _sweep_worker(wargs)
             results[key] = p_val
     else:
         # Parallel path: each walk-forward is independent so embarrassingly parallel.
         # ProcessPoolExecutor avoids GIL; each worker gets its own Python interpreter.
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            futures = {executor.submit(_run_one, pair): pair for pair in pairs}
+            futures = {executor.submit(_sweep_worker, wargs): wargs for wargs in worker_args}
             for future in as_completed(futures):
                 key, p_val = future.result()
                 results[key] = p_val

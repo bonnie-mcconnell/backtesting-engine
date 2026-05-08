@@ -148,6 +148,17 @@ class MovingAverageStrategy(BaseStrategy):
             "long_window": self.long_window_,
         }
 
+    def format_params(self) -> str:
+        """Return compact string e.g. 'MA(50/200)'."""
+        return f"MA({self.short_window_}/{self.long_window_})"
+
+    def param_evolution_spec(self) -> list[tuple[str, str]]:
+        """Two lines: short window and long window over time."""
+        return [
+            ("Short MA window (days)", "short_window"),
+            ("Long MA window (days)", "long_window"),
+        ]
+
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
         """Generate crossover signals using calibrated window parameters."""
         return self._compute_signals(data, self.short_window_, self.long_window_)

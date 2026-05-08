@@ -12,6 +12,10 @@ All private helpers (_sharpe, _sortino, etc.) are also importable for unit
 testing and for use by the strategy grid-search in moving_average.py.
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -21,20 +25,28 @@ from backtesting_engine.config import (
     N_PERMUTATIONS,
     RISK_FREE_RATE,
 )
-from backtesting_engine.models import MetricsResult
+from backtesting_engine.models import MetricsResult, Trade
 
 
-def calculate_metrics(portfolio_values: pd.Series) -> MetricsResult:
+def calculate_metrics(
+    portfolio_values: pd.Series,
+    trades: Sequence[Trade] | None = None,
+    seed: int = BLOCK_BOOTSTRAP_SEED,
+) -> MetricsResult:
     """
     Compute all performance metrics from a daily portfolio value series.
 
     Args:
         portfolio_values: Daily mark-to-market portfolio values. NaN rows
                           are dropped before any calculation.
+        trades: Optional list of Trade objects from the same window. When
+                provided, trade-level diagnostics (exposure, win rate, etc.)
+                are computed and included in the result.
 
     Returns:
         MetricsResult containing Sharpe, Sortino, max drawdown, Calmar,
-        Omega, and a block-bootstrap p-value.
+        Omega, a block-bootstrap p-value, and trade diagnostics if trades
+        were provided.
 
     Raises:
         ValueError: If the returns series is empty after dropping NaNs.
@@ -49,13 +61,23 @@ def calculate_metrics(portfolio_values: pd.Series) -> MetricsResult:
             "Check that portfolio_values has at least two non-NaN entries."
         )
 
+    # Compute trade-level diagnostics when trades are available.
+    exposure, trade_count, win_rate, avg_wl, avg_hold = _trade_diagnostics(
+        portfolio_values, trades
+    )
+
     return MetricsResult(
         sharpe_ratio=_sharpe(returns_array),
         sortino_ratio=_sortino(returns_array),
         max_drawdown=_max_drawdown(returns_array),
         calmar_ratio=_calmar(returns_array),
         omega_ratio=_omega(returns_array),
-        p_value=_monte_carlo_p_value(returns_array),
+        p_value=_monte_carlo_p_value(returns_array, seed=seed),
+        exposure_fraction=exposure,
+        trade_count=trade_count,
+        win_rate=win_rate,
+        avg_win_loss_ratio=avg_wl,
+        avg_holding_days=avg_hold,
     )
 
 
@@ -211,7 +233,10 @@ def _omega(returns_array: np.ndarray, threshold: float = RISK_FREE_RATE) -> floa
     return float(gains / losses)
 
 
-def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
+def _monte_carlo_p_value(
+    returns_array: np.ndarray,
+    seed: int = BLOCK_BOOTSTRAP_SEED,
+) -> float:
     """
     Block-bootstrap p-value for the observed Sharpe ratio.
 
@@ -249,12 +274,22 @@ def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
         p-value in [0, 1].
     """
     observed_sharpe = _sharpe(returns_array)
-    rng = np.random.default_rng(seed=BLOCK_BOOTSTRAP_SEED)
+    rng = np.random.default_rng(seed=seed)
     n = len(returns_array)
     block_size = max(1, int(np.sqrt(n)))
 
-    # Tile array twice so circular indexing never goes out of bounds.
-    circular = np.tile(returns_array, 2)
+    # Centre returns by subtracting the sample mean before resampling.
+    # Without centring, the bootstrap distribution inherits the strategy's
+    # observed mean return, so p(boot_sharpe >= observed_sharpe) ≈ 0.5
+    # for any positive-mean strategy regardless of how strong the signal is.
+    # The correct H₀ is: the observed Sharpe arose from a zero-mean process
+    # with the same autocorrelation structure as the data.  Resampling
+    # centered returns builds a null distribution that is anchored at zero
+    # rather than at the observed mean.
+    centered = returns_array - returns_array.mean()
+
+    # Tile centered array twice so circular indexing never goes out of bounds.
+    circular = np.tile(centered, 2)
 
     bootstrapped_sharpes = np.empty(N_PERMUTATIONS)
     for i in range(N_PERMUTATIONS):
@@ -267,3 +302,87 @@ def _monte_carlo_p_value(returns_array: np.ndarray) -> float:
         bootstrapped_sharpes[i] = _sharpe(shuffled)
 
     return float(np.mean(bootstrapped_sharpes >= observed_sharpe))
+
+
+def _trade_diagnostics(
+    portfolio_values: pd.Series,
+    trades: Sequence[Trade] | None,
+) -> tuple[float, int, float, float, float]:
+    """
+    Compute trade-level diagnostics: exposure, count, win rate, avg W/L, avg hold.
+
+    These numbers answer practical questions that Sharpe alone does not:
+    - exposure_fraction: Is the strategy mostly in-market or mostly in cash?
+      A strategy with 20% exposure and Sharpe 0.5 is very different from one
+      with 95% exposure and Sharpe 0.5 - the first has much lower market beta.
+    - win_rate / avg_win_loss_ratio: Does the strategy make money by being right
+      often (high win rate, small wins) or by having large winners despite
+      frequent losses (low win rate, high W/L)?  Both can be profitable but have
+      different drawdown profiles.
+    - avg_holding_days: A strategy holding for 1 day is a market-maker; one
+      holding for 60 days is a trend follower. This informs transaction cost
+      sensitivity - short holds amplify the per-trade cost drag dramatically.
+
+    Args:
+        portfolio_values: Daily portfolio values (used for exposure calculation).
+        trades: Sequence of Trade objects (may be None or empty).
+
+    Returns:
+        Tuple of (exposure_fraction, trade_count, win_rate, avg_win_loss_ratio,
+        avg_holding_days). NaN for any metric that cannot be computed.
+    """
+
+    nan = float("nan")
+
+    # Exposure: fraction of bars in the window where the strategy held a position.
+    # Computed from trade entry/exit dates rather than portfolio value changes.
+    # The heuristic of checking abs(portfolio_change) > threshold is unreliable:
+    # on a quiet in-market day SPY might move 0.05%, which falls below any
+    # reasonable threshold, incorrectly classifying that bar as cash-holding.
+    # The exact method: count unique index dates between entry and exit for each
+    # trade, then divide by total bars.
+    n_bars = len(portfolio_values)
+    if trades is None:
+        # trades=None means diagnostics were not requested - exposure unknown.
+        exposure = nan
+    elif len(trades) > 0:
+        # Compute exact exposure from trade entry/exit dates.
+        pv_index = portfolio_values.index
+        in_market: set[object] = set()
+        for t in trades:
+            mask = (pv_index >= t.entry_date) & (pv_index <= t.exit_date)
+            in_market.update(pv_index[mask].tolist())
+        exposure = len(in_market) / n_bars if n_bars > 0 else nan
+    else:
+        # trades=[] → strategy ran, made no trades → held cash the entire window.
+        exposure = 0.0
+
+    if not trades:
+        return exposure, 0, nan, nan, nan
+
+    trade_count = len(trades)
+
+    # Win rate: fraction of trades with positive net P&L.
+    pnls = np.array([t.pnl for t in trades], dtype=float)
+    wins = pnls[pnls > 0]
+    losses = pnls[pnls < 0]
+    win_rate = float(len(wins) / trade_count) if trade_count > 0 else nan
+
+    # Average win/loss ratio (absolute values).
+    # Infinity means no losses - every trade was profitable.
+    if len(wins) > 0 and len(losses) > 0:
+        avg_wl = float(wins.mean() / abs(losses.mean()))
+    elif len(wins) > 0:
+        avg_wl = float("inf")   # no losses
+    else:
+        avg_wl = 0.0             # no wins
+
+    # Average holding period in calendar days.
+    # pd.Timestamp subtraction always yields a Timedelta with a .days attribute;
+    # the old hasattr guard was checking the wrong object (Timestamp has no .days)
+    # and always evaluated to True for the second clause - it did nothing.
+    hold_days = [(t.exit_date - t.entry_date).days for t in trades]
+    avg_hold = float(np.mean(hold_days)) if hold_days else nan
+
+    return exposure, trade_count, win_rate, avg_wl, avg_hold
+

@@ -45,12 +45,13 @@ Moskowitz, T.J., Ooi, Y.H., & Pedersen, L.H. (2012). Time Series Momentum.
 import numpy as np
 import pandas as pd
 
+from backtesting_engine.config import MOMENTUM_LOOKBACKS
 from backtesting_engine.metrics import _sharpe as _sharpe_annualised
 from backtesting_engine.strategy.base import BaseStrategy, returns_from_signals
 
-# Lookback periods tested during grid search (in trading days).
-# Covers the range documented in Moskowitz et al.: 1 month through 12 months.
-_LOOKBACK_GRID: list[int] = [20, 40, 60, 90, 120, 180, 250]
+# Lookback grid now lives in config.py as MOMENTUM_LOOKBACKS so it can be
+# changed from one place alongside the MA grid constants.
+_LOOKBACK_GRID: list[int] = MOMENTUM_LOOKBACKS
 
 
 class MomentumStrategy(BaseStrategy):
@@ -192,15 +193,22 @@ class MomentumStrategy(BaseStrategy):
         results: dict[int, pd.Series] = {}
 
         for lb in self._all_lookbacks_:
+            close_test = test_data["close"].to_numpy(dtype=float)
             if context_data is not None:
-                combined = pd.concat([context_data, test_data])
-                all_sig = self.generate_signals(combined)
-                signals = all_sig.loc[test_data.index].to_numpy()
+                # Use _momentum_signals(lb) directly - NOT self.generate_signals(),
+                # which would apply self.lookback_ (the fitted winner) to every
+                # candidate, making all columns of the RC matrix identical.
+                # Each candidate must be evaluated with its own lookback.
+                combined_close = np.concatenate([
+                    context_data["close"].to_numpy(dtype=float),
+                    close_test,
+                ])
+                all_signals_raw = _momentum_signals(combined_close, lb)
+                signals = all_signals_raw[len(context_data):]
             else:
-                signals = _momentum_signals(test_data["close"].to_numpy(dtype=float), lb)
+                signals = _momentum_signals(close_test, lb)
 
-            close = test_data["close"].to_numpy(dtype=float)
-            raw_returns = returns_from_signals(close, signals)
+            raw_returns = returns_from_signals(close_test, signals)
             returns_series = pd.Series(
                 raw_returns,
                 index=test_data.index[1:],
@@ -213,6 +221,14 @@ class MomentumStrategy(BaseStrategy):
     def active_params(self) -> dict[str, object]:
         """Return calibrated lookback for parameter evolution tracking."""
         return {"lookback": self.lookback_}
+
+    def format_params(self) -> str:
+        """Return compact string e.g. 'MOM(90)'."""
+        return f"MOM({self.lookback_})"
+
+    def param_evolution_spec(self) -> list[tuple[str, str]]:
+        """One line: fitted lookback period over time."""
+        return [("Fitted lookback (days)", "lookback")]
 
 
 # ---------------------------------------------------------------------------

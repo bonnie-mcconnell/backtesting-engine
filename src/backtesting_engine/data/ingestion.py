@@ -1,33 +1,33 @@
 """
-Data ingestion: download OHLCV data with adjusted closing prices via yfinance.
+Data ingestion: download OHLCV data with split- and dividend-adjusted prices via yfinance.
 
 Returns a DataFrame with a DatetimeIndex and columns:
   close  - split- and dividend-adjusted closing price (required by all strategies)
-  high   - unadjusted daily high  (required by execution model for slippage)
-  low    - unadjusted daily low   (required by execution model for slippage)
-  volume - daily volume           (available for future volume-based strategies)
+  high   - split- and dividend-adjusted daily high  (required by execution model for slippage)
+  low    - split- and dividend-adjusted daily low   (required by execution model for slippage)
+  volume - daily volume                               (available for future volume-based strategies)
 
-Why adjusted close but unadjusted high/low?
-Adjusted closing prices are necessary for accurate return computation - without
-adjustment, dividends and splits create artificial price gaps that look like
-overnight losses. Intraday high/low are used only for slippage estimation
-(fill = close ± factor × range), where what matters is the intraday range
-width, not its absolute level.
+Why adjusted close AND adjusted high/low?
+All three price columns are adjusted by the same split/dividend factor so that
+the intraday range (high - low) remains consistent with the adjusted close.
+If close is adjusted but high/low are not, the close can sit outside the [low, high]
+band on ex-dividend dates, making fill = close ± slippage × (high - low) nonsensical.
 
-The one case where this mixing causes a problem is ex-dividend dates: the
-adjusted close is reduced by the dividend amount, which can place it slightly
-outside the unadjusted [low, high] band. load_data() clips the adjusted close
-to [low, high] on such dates so the slippage model never produces a negative
-intraday range. The clip is applied only when the discrepancy is below a
-threshold (0.5% of close) - larger discrepancies indicate a data error and
-raise rather than silently adjust.
+The one edge case where adjustment still causes a minor issue is ex-dividend dates:
+the adjusted close is reduced by the dividend amount, which can place it slightly
+outside the adjusted [low, high] band due to rounding. load_data() clips the adjusted
+close to [low, high] on such dates so the slippage model never produces a negative
+intraday range. The clip is applied only when the discrepancy is below a threshold
+(0.5% of close) - larger discrepancies indicate a data error and raise rather than
+silently adjust.
 
 Caching
 -------
 Downloaded data is cached as Parquet in ~/.cache/backtesting-engine/. A cached
-file is used if it exists and was written within the last 24 hours. Set
-use_cache=False to force a fresh download. The cache is keyed by (ticker,
-start_date) so different tickers and start dates are cached independently.
+file is used if it exists and was written within the last 24 hours (or up to 1 year
+for fixed end_date runs, since frozen data does not change). Set use_cache=False to
+force a fresh download. The cache is keyed by (ticker, start_date, end_date) so
+different tickers, start dates, and end dates are cached independently.
 """
 
 import hashlib
@@ -44,6 +44,7 @@ _CACHE_DIR = Path.home() / ".cache" / "backtesting-engine"
 def load_data(
     ticker: str,
     start_date: str,
+    end_date: str | None = None,
     use_cache: bool = True,
 ) -> pd.DataFrame:
     """
@@ -56,6 +57,9 @@ def load_data(
     Args:
         ticker: Exchange ticker symbol (e.g. 'SPY', 'AAPL').
         start_date: Start date in 'YYYY-MM-DD' format.
+        end_date: End date in 'YYYY-MM-DD' format, or None for today.
+                  Setting a fixed end_date produces reproducible results
+                  that do not change as new market data arrives.
         use_cache: If True (default), serve from cache when available and fresh.
                    Set to False to force a fresh network download.
 
@@ -71,59 +75,67 @@ def load_data(
                     or if the data fails the adjusted/unadjusted band check.
     """
     if use_cache:
-        cached = _load_from_cache(ticker, start_date)
+        cached = _load_from_cache(ticker, start_date, end_date)
         if cached is not None:
             return cached
 
-    data = _download_and_clean(ticker, start_date)
+    data = _download_and_clean(ticker, start_date, end_date)
 
     if use_cache:
-        _save_to_cache(data, ticker, start_date)
+        _save_to_cache(data, ticker, start_date, end_date)
 
     return data
 
 
-def _cache_path(ticker: str, start_date: str) -> Path:
-    """Return the Parquet cache path for a (ticker, start_date) pair."""
-    key = f"{ticker.upper()}_{start_date}"
+def _cache_path(ticker: str, start_date: str, end_date: str | None = None) -> Path:
+    """Return the Parquet cache path for a (ticker, start_date, end_date) triple."""
+    end_str = end_date or "latest"
+    key = f"{ticker.upper()}_{start_date}_{end_str}"
     safe = hashlib.md5(key.encode()).hexdigest()[:12]
     return _CACHE_DIR / f"{ticker.upper()}_{safe}.parquet"
 
 
-def _load_from_cache(ticker: str, start_date: str) -> pd.DataFrame | None:
+def _load_from_cache(
+    ticker: str, start_date: str, end_date: str | None = None
+) -> pd.DataFrame | None:
     """
     Return cached data if it exists and is fresh, otherwise None.
 
     Freshness check: file modification time within _CACHE_MAX_AGE_HOURS.
+    Fixed end_date runs use a much longer TTL (365 days) since the data
+    is frozen by definition and should not be re-downloaded unnecessarily.
     If the file exists but is stale, it is left in place (will be overwritten
     on next successful download).
     """
     import time
 
-    path = _cache_path(ticker, start_date)
+    path = _cache_path(ticker, start_date, end_date)
     if not path.exists():
         return None
 
+    # Fixed end_date → data is frozen; use 1-year TTL to avoid pointless re-downloads.
+    max_age = (365 * 24) if end_date is not None else _CACHE_MAX_AGE_HOURS
     age_hours = (time.time() - path.stat().st_mtime) / 3600
-    if age_hours > _CACHE_MAX_AGE_HOURS:
+    if age_hours > max_age:
         return None
 
     try:
         return pd.read_parquet(path)
     except (OSError, Exception):
         # Corrupt or unreadable cache file - re-download. We catch broadly here
-        # because pyarrow and fastparquet raise different exception types for
-        # corrupt files. The failure is non-fatal: returning None triggers a
-        # fresh download.
+        # because pyarrow raises different exception types for corrupt files.
+        # The failure is non-fatal: returning None triggers a fresh download.
         return None
 
 
-def _save_to_cache(data: pd.DataFrame, ticker: str, start_date: str) -> None:
+def _save_to_cache(
+    data: pd.DataFrame, ticker: str, start_date: str, end_date: str | None = None
+) -> None:
     """Write data to Parquet cache, warning (but not raising) on write errors."""
     import warnings
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = _cache_path(ticker, start_date)
+        path = _cache_path(ticker, start_date, end_date)
         data.to_parquet(path)
     except Exception as e:
         # Disk full, permissions, missing parquet engine, or path error.
@@ -135,13 +147,15 @@ def _save_to_cache(data: pd.DataFrame, ticker: str, start_date: str) -> None:
         )
 
 
-def _download_and_clean(ticker: str, start_date: str) -> pd.DataFrame:
+def _download_and_clean(
+    ticker: str, start_date: str, end_date: str | None = None
+) -> pd.DataFrame:
     """Download from yfinance and apply all cleaning steps."""
-    end_date = pd.Timestamp.now()
+    end_ts = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp.now()
     raw = yf.download(
         ticker,
         start=start_date,
-        end=end_date,
+        end=end_ts,
         auto_adjust=False,
         progress=False,
     )
@@ -149,7 +163,7 @@ def _download_and_clean(ticker: str, start_date: str) -> pd.DataFrame:
     if raw is None or raw.empty:
         raise ValueError(
             f"No data returned for ticker '{ticker}' "
-            f"between {start_date} and {end_date.date()}. "
+            f"between {start_date} and {end_ts.date()}. "
             "Check that the ticker is valid and the date range has trading activity."
         )
 

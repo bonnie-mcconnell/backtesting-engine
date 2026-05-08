@@ -102,3 +102,14 @@ START_DATE: str = "1993-01-01"
 # SPY inception date, maximising available history for walk-forward windows.
 # Earlier dates would require switching to a different index proxy.
 
+# ---------------------------------------------------------------------------
+# Momentum strategy
+# ---------------------------------------------------------------------------
+
+MOMENTUM_LOOKBACKS: list[int] = [20, 40, 60, 90, 120, 180, 250]
+# Lookback periods (in trading days) tested during momentum grid search.
+# Range covers 1 month (20 days) through ~12 months (250 days), matching the
+# intermediate-horizon momentum documented in Moskowitz, Ooi & Pedersen (2012).
+# Coarser than the MA grid by design - momentum Sharpe is flatter across
+# lookbacks, so a fine grid would overfit without improving OOS performance.
+

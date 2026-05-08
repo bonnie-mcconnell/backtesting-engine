@@ -158,12 +158,12 @@ def build_dashboard(
     # Annotation: summary stats in title
     m = result.summary_metrics
     valid_n = len(valid)
-    skipped = result.skipped_window_count
+    skipped = result.flat_cash_window_count
     rc_str = (
         f"  |  RC p: {m.reality_check_p_value:.4f}"
         if not math.isnan(m.reality_check_p_value) else "  |  RC p: N/A"
     )
-    skip_str = f"  ({skipped} skipped)" if skipped else ""
+    skip_str = f"  ({skipped} flat-cash)" if skipped else ""
     bm_str = ""
     if benchmark is not None:
         bm_str = (
@@ -210,7 +210,7 @@ def build_dashboard(
 
     fig.write_html(
         str(output_path),
-        include_plotlyjs="cdn",
+        include_plotlyjs=True,   # embed full Plotly JS bundle (~3 MB) for offline use
         full_html=True,
         config={"displayModeBar": True, "scrollZoom": True},
     )
@@ -445,13 +445,18 @@ def _add_window_sharpes(
     else:
         colors = [_POSITIVE if s >= 0 else _NEGATIVE for s in sharpes]
 
+    def _fmt_pct(v: float) -> str:
+        return f"{v:.0%}" if not (v != v) else "N/A"  # isnan check without import
+
     custom = [
         (f"{w.test_start.date()} → {w.test_end.date()}<br>"
          f"Sharpe: {w.metrics_result.sharpe_ratio:.2f}<br>"
          f"Sortino: {w.metrics_result.sortino_ratio:.2f}<br>"
          f"Max DD: {w.metrics_result.max_drawdown:.1%}<br>"
          f"p-value: {w.metrics_result.p_value:.4f}<br>"
-         f"Trades: {len(w.simulation_result.trades)}")
+         f"Trades: {len(w.simulation_result.trades)}<br>"
+         f"Win rate: {_fmt_pct(w.metrics_result.win_rate)}<br>"
+         f"Exposure: {_fmt_pct(w.metrics_result.exposure_fraction)}")
         for w in valid_windows
     ]
 
@@ -543,83 +548,73 @@ def _add_param_evolution(
     """
     Panel 6a: Parameter evolution across walk-forward windows.
 
-    For MovingAverageStrategy: shows how short_window and long_window
-    changed as training windows moved forward in time. Parameter drift
-    reveals which market regimes favoured faster vs slower indicators.
+    Uses WindowResult.param_evolution_spec to determine what to plot - a list
+    of (display_label, active_params_key) pairs stored by walk_forward() from
+    strategy.param_evolution_spec(). This eliminates all isinstance checks and
+    hard-coded parameter key names from the dashboard code.
 
-    For KalmanFilterStrategy: shows the calibrated signal-to-noise ratio
-    (Q/R) over time. High SNR → filter tracks price closely (trending market).
-    Low SNR → filter smooths aggressively (noisy/mean-reverting market).
+    For MovingAverageStrategy: shows short_window and long_window drift.
+    For KalmanFilterStrategy:  shows signal-to-noise ratio and log-likelihood.
+    For MomentumStrategy:      shows fitted lookback period.
+    For new strategies:        automatically uses whatever param_evolution_spec() returns.
     """
     valid = result.valid_windows
     if not valid or not valid[0].active_params:
         _add_cumulative_benchmark(fig, result, row, col)
         return
 
+    # Get spec from first window - all windows for the same strategy share the same spec.
+    spec = valid[0].param_evolution_spec
+    if not spec:
+        _add_cumulative_benchmark(fig, result, row, col)
+        return
+
     test_dates = [w.test_start for w in valid]
     params_list = [w.active_params for w in valid]
-    first_key = list(params_list[0].keys())[0]
 
-    if "short_window" in params_list[0]:
-        # MA strategy: dual-axis short/long window plot.
-        short_vals = [p.get("short_window", float("nan")) for p in params_list]
-        long_vals  = [p.get("long_window", float("nan")) for p in params_list]
+    # Colour palette - first spec entry gets _PARAM_SHORT, second gets _PARAM_LONG,
+    # further entries cycle through a fallback list.
+    palette = [_PARAM_SHORT, _PARAM_LONG, "#A78BFA", "#34D399", "#F59E0B"]
 
-        fig.add_trace(go.Scatter(
-            x=test_dates, y=short_vals,
-            name="Short MA window",
-            mode="lines+markers",
-            line=dict(color=_PARAM_SHORT, width=2),
-            marker=dict(size=7),
-            hovertemplate="%{x|%Y}<br>Short: %{y}d<extra></extra>",
-        ), row=row, col=col)
+    # Plot the first spec entry on the primary Y-axis.
+    # If there is a second entry AND it has a very different scale (e.g. SNR vs
+    # log-likelihood), it is plotted on a secondary Y-axis via yaxis2.
+    primary_label, primary_key = spec[0]
+    # active_params values are typed as `object` (the widest common type across
+    # all strategies). cast() tells mypy we know these are numeric at runtime.
+    from typing import cast as _cast
+    primary_vals = [
+        float(_cast(float, p.get(primary_key, float("nan"))))
+        for p in params_list
+    ]
 
-        fig.add_trace(go.Scatter(
-            x=test_dates, y=long_vals,
-            name="Long MA window",
-            mode="lines+markers",
-            line=dict(color=_PARAM_LONG, width=2),
-            marker=dict(size=7),
-            hovertemplate="%{x|%Y}<br>Long: %{y}d<extra></extra>",
-        ), row=row, col=col)
+    fig.add_trace(go.Scatter(
+        x=test_dates, y=primary_vals,
+        name=primary_label,
+        mode="lines+markers",
+        line=dict(color=palette[0], width=2),
+        marker=dict(size=7),
+        hovertemplate=f"%{{x|%Y}}<br>{primary_label}: %{{y}}<extra></extra>",
+    ), row=row, col=col)
 
-        fig.update_yaxes(title_text="MA Window (days)", row=row, col=col)
-        fig.update_xaxes(title_text="Test window start", row=row, col=col)
-
-    elif "snr" in params_list[0]:
-        # Kalman strategy: signal-to-noise ratio over time.
-        snr_vals = [p.get("snr", float("nan")) for p in params_list]
-        ll_vals = [p.get("log_likelihood", float("nan")) for p in params_list]
-
-        fig.add_trace(go.Scatter(
-            x=test_dates, y=snr_vals,
-            name="Q/R (signal-to-noise ratio)",
-            mode="lines+markers",
-            line=dict(color=_PARAM_SHORT, width=2),
-            marker=dict(size=7),
-            customdata=ll_vals,
-            hovertemplate=(
-                "%{x|%Y}<br>"
-                "Q/R: %{y:.6f}<br>"
-                "Log-likelihood: %{customdata:.1f}"
-                "<extra>SNR</extra>"
-            ),
-        ), row=row, col=col)
-
-        fig.update_yaxes(title_text="Q/R (signal-to-noise ratio)", row=row, col=col)
-        fig.update_xaxes(title_text="Test window start", row=row, col=col)
-
-    else:
-        # Unknown strategy params: plot first numeric key.
-        key = first_key
-        vals = [p.get(key, float("nan")) for p in params_list]
+    # Plot remaining spec entries on the same axis (they usually share units).
+    for idx, (label, key) in enumerate(spec[1:], start=1):
+        vals = [
+            float(_cast(float, p.get(key, float("nan"))))
+            for p in params_list
+        ]
         fig.add_trace(go.Scatter(
             x=test_dates, y=vals,
-            name=str(key),
+            name=label,
             mode="lines+markers",
-            line=dict(color=_PARAM_SHORT, width=2),
+            line=dict(color=palette[min(idx, len(palette) - 1)], width=2),
+            marker=dict(size=7),
+            hovertemplate=f"%{{x|%Y}}<br>{label}: %{{y}}<extra></extra>",
         ), row=row, col=col)
-        fig.update_yaxes(title_text=str(key), row=row, col=col)
+
+    # Y-axis label: primary label (e.g. "Short MA window (days)", "Q/R signal-to-noise ratio").
+    fig.update_yaxes(title_text=primary_label, row=row, col=col)
+    fig.update_xaxes(title_text="Test window start", row=row, col=col)
 
 
 def _add_cumulative_benchmark(

@@ -33,6 +33,7 @@ import pandas as pd
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
 from backtesting_engine.config import (
     ANNUALISATION_FACTOR,
+    BLOCK_BOOTSTRAP_SEED,
     MOVING_AVERAGE_LONG_DAYS,
     SIGNIFICANCE_THRESHOLD,
     START_DATE,
@@ -51,15 +52,6 @@ from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
 _MIN_ROWS = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS
-
-# Realistic retail execution on a liquid ETF:
-#   0.1% fee, 5% of daily range slippage, 1-day signal delay.
-_DEFAULT_EXECUTION = ExecutionConfig(
-    transaction_cost_rate=0.001,
-    slippage_factor=0.05,
-    signal_delay=1,
-)
-
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -102,6 +94,67 @@ Examples:
         action="store_true",
         help="Force fresh data download, ignoring local cache",
     )
+    parser.add_argument(
+        "--end",
+        default=None,
+        metavar="YYYY-MM-DD",
+        help=(
+            "End date for historical data (default: today). "
+            "Set this to a fixed date to produce reproducible results that do not "
+            "change as new data arrives.  Example: --end 2024-12-31"
+        ),
+    )
+    parser.add_argument(
+        "--cost",
+        type=float,
+        default=0.001,
+        metavar="RATE",
+        help="Transaction cost rate per side, e.g. 0.001 = 0.1%% (default: 0.001)",
+    )
+    parser.add_argument(
+        "--slippage",
+        type=float,
+        default=0.05,
+        metavar="FACTOR",
+        help=(
+            "Slippage as fraction of daily high-low range (default: 0.05). "
+            "0 = fill at close, 0.1 = 10%% of daily range"
+        ),
+    )
+    parser.add_argument(
+        "--delay",
+        type=int,
+        default=1,
+        metavar="BARS",
+        help="Signal execution delay in bars (default: 1 = next-day fill)",
+    )
+    parser.add_argument(
+        "--train-years",
+        type=int,
+        default=TRAINING_WINDOW_YEARS,
+        metavar="N",
+        help=f"Training window length in years (default: {TRAINING_WINDOW_YEARS})",
+    )
+    parser.add_argument(
+        "--test-years",
+        type=int,
+        default=TESTING_WINDOW_YEARS,
+        metavar="N",
+        help=f"Test window length in years (default: {TESTING_WINDOW_YEARS})",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Bootstrap random seed override (default: from config)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=".",
+        metavar="DIR",
+        help="Directory for output dashboards (default: current directory)",
+    )
     return parser.parse_args()
 
 
@@ -112,7 +165,25 @@ def main() -> None:
     print("  Backtesting Engine  ·  Walk-Forward  ·  Monte Carlo  ·  Reality Check")
     print(f"{'═' * 70}\n")
 
-    data = _load(args.ticker, args.start, use_cache=not args.no_cache)
+    execution = ExecutionConfig(
+        transaction_cost_rate=args.cost,
+        slippage_factor=args.slippage,
+        signal_delay=args.delay,
+    )
+
+    # Bootstrap seed: use CLI override if provided, else fall back to config default.
+    # Passing an explicit seed makes every bootstrap reproducible.
+    bootstrap_seed = args.seed if args.seed is not None else BLOCK_BOOTSTRAP_SEED
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    data = _load(
+        args.ticker,
+        args.start,
+        end_date=args.end,
+        use_cache=not args.no_cache,
+    )
 
     run_ma      = args.strategy in ("ma",      "all") and not args.costs_only
     run_kalman  = args.strategy in ("kalman",  "all") and not args.costs_only
@@ -122,16 +193,23 @@ def main() -> None:
     kalman_result  = None
     momentum_result = None
 
+    train_yrs = args.train_years
+    test_yrs  = args.test_years
+
     # ── Strategy 1: Moving Average ─────────────────────────────────────────
     if run_ma:
         _section("Strategy 1: Moving Average Crossover  (grid-search calibrated)")
-        ma_result = walk_forward(data, MovingAverageStrategy(), execution=_DEFAULT_EXECUTION)
+        ma_result = walk_forward(
+            data, MovingAverageStrategy(), execution=execution,
+            training_window_years=train_yrs, testing_window_years=test_yrs,
+            bootstrap_seed=bootstrap_seed,
+        )
         _print_results(ma_result)
-        ma_benchmark = compute_benchmark(ma_result, data)
+        ma_benchmark = compute_benchmark(ma_result, data, execution=execution)
         _print_benchmark(ma_benchmark)
         ma_dash = build_dashboard(
             ma_result,
-            Path("dashboard_ma.html"),
+            output_dir / "dashboard_ma.html",
             strategy_name_override="Moving Average Crossover",
             benchmark=ma_benchmark,
             price_data=data["close"],
@@ -141,13 +219,17 @@ def main() -> None:
     # ── Strategy 2: Kalman Filter ──────────────────────────────────────────
     if run_kalman:
         _section("Strategy 2: Kalman Filter Trend Following  (MLE calibrated)")
-        kalman_result = walk_forward(data, KalmanFilterStrategy(), execution=_DEFAULT_EXECUTION)
+        kalman_result = walk_forward(
+            data, KalmanFilterStrategy(), execution=execution,
+            training_window_years=train_yrs, testing_window_years=test_yrs,
+            bootstrap_seed=bootstrap_seed,
+        )
         _print_results(kalman_result)
-        kalman_benchmark = compute_benchmark(kalman_result, data)
+        kalman_benchmark = compute_benchmark(kalman_result, data, execution=execution)
         _print_benchmark(kalman_benchmark)
         kalman_dash = build_dashboard(
             kalman_result,
-            Path("dashboard_kalman.html"),
+            output_dir / "dashboard_kalman.html",
             strategy_name_override="Kalman Filter Trend Following",
             benchmark=kalman_benchmark,
             price_data=data["close"],
@@ -157,13 +239,17 @@ def main() -> None:
     # ── Strategy 3: Momentum ──────────────────────────────────────────────
     if run_momentum:
         _section("Strategy 3: Time-Series Momentum  (lookback grid-search calibrated)")
-        momentum_result = walk_forward(data, MomentumStrategy(), execution=_DEFAULT_EXECUTION)
+        momentum_result = walk_forward(
+            data, MomentumStrategy(), execution=execution,
+            training_window_years=train_yrs, testing_window_years=test_yrs,
+            bootstrap_seed=bootstrap_seed,
+        )
         _print_results(momentum_result)
-        momentum_benchmark = compute_benchmark(momentum_result, data)
+        momentum_benchmark = compute_benchmark(momentum_result, data, execution=execution)
         _print_benchmark(momentum_benchmark)
         momentum_dash = build_dashboard(
             momentum_result,
-            Path("dashboard_momentum.html"),
+            output_dir / "dashboard_momentum.html",
             strategy_name_override="Time-Series Momentum",
             benchmark=momentum_benchmark,
             price_data=data["close"],
@@ -179,12 +265,23 @@ def main() -> None:
     # ── Cost sensitivity sweep ─────────────────────────────────────────────
     if args.costs_only or args.strategy == "all":
         _section("Cost Sensitivity Analysis  (how significance degrades with execution cost)")
-        _run_cost_sensitivity(data, ma_result, kalman_result, momentum_result)
+        _run_cost_sensitivity(
+            data, ma_result, kalman_result, momentum_result,
+            output_dir=output_dir,
+            train_yrs=train_yrs, test_yrs=test_yrs,
+            bootstrap_seed=bootstrap_seed,
+        )
 
 
-def _load(ticker: str, start_date: str, use_cache: bool = True) -> pd.DataFrame:
-    print(f"Loading {ticker} from {start_date}...")
-    data = load_data(ticker, start_date, use_cache=use_cache)
+def _load(
+    ticker: str,
+    start_date: str,
+    end_date: str | None = None,
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    end_str = end_date or "today"
+    print(f"Loading {ticker} from {start_date} to {end_str}...")
+    data = load_data(ticker, start_date, end_date=end_date, use_cache=use_cache)
     validate_data(data, min_rows=_MIN_ROWS)
     print(
         f"  {len(data):,} trading days  "
@@ -197,6 +294,15 @@ def _section(title: str) -> None:
     print("─" * 70)
     print(f"  {title}")
     print("─" * 70)
+
+
+def _fmt_metric(v: float, fmt: str = ".3f") -> str:
+    """Format a float metric for console output, handling NaN and inf gracefully."""
+    if math.isnan(v):
+        return "N/A"
+    if abs(v) == float("inf"):
+        return "∞" if fmt != ".3f" else "∞ (no downside)"
+    return format(v, fmt)
 
 
 # ---------------------------------------------------------------------------
@@ -214,52 +320,34 @@ def _print_results(result: BacktestResult) -> None:
 
     for w in result.window_results:
         window_str = f"{w.test_start.date()} → {w.test_end.date()}"
-        if w.skipped:
-            print(f"  {window_str:<24}  [skipped - no trades generated]")
-            continue
-
         m = w.metrics_result
-        params = _format_params(w.active_params)
+        trade_n = len(w.simulation_result.trades)
+        # Use formatted_params from WindowResult - set by strategy.format_params()
+        # at window creation time so main.py has no strategy-specific knowledge.
+        params = w.formatted_params if trade_n > 0 else "[flat-cash]"
         print(
             f"  {window_str:<24}  "
             f"{m.sharpe_ratio:>7.2f}  {m.sortino_ratio:>8.2f}  "
             f"{m.max_drawdown:>8.2%}  {m.p_value:>7.4f}  "
-            f"{len(w.simulation_result.trades):>6}  {params}"
+            f"{trade_n:>6}  {params}"
         )
 
     print()
     _print_summary(result)
 
 
-def _format_params(params: dict[str, object]) -> str:
-    """Format active_params as a compact string for the results table."""
-    if not params:
-        return ""
-    if "short_window" in params:
-        return f"MA({params['short_window']}/{params['long_window']})"
-    if "snr" in params:
-        return f"SNR={params['snr']:.2e}"
-    return str(params)
-
-
 def _print_summary(result: BacktestResult) -> None:
     m = result.summary_metrics
     valid_n = len(result.valid_windows)
-    skipped = result.skipped_window_count
+    flat_cash = result.flat_cash_window_count
 
-    print(f"  {'Windows':<30} {valid_n}  ({skipped} skipped)")
-    def _fmt(v: float, fmt: str = ".3f") -> str:
-        if math.isnan(v):
-            return "N/A"
-        if abs(v) == float("inf"):
-            return "∞ (no downside)" if fmt == ".3f" else "∞"
-        return format(v, fmt)
+    print(f"  {'Windows':<30} {valid_n}  ({flat_cash} flat-cash)")
 
-    print(f"  {'Sharpe ratio':<30} {_fmt(m.sharpe_ratio)}")
-    print(f"  {'Sortino ratio':<30} {_fmt(m.sortino_ratio)}")
+    print(f"  {'Sharpe ratio':<30} {_fmt_metric(m.sharpe_ratio)}")
+    print(f"  {'Sortino ratio':<30} {_fmt_metric(m.sortino_ratio)}")
     print(f"  {'Max drawdown':<30} {m.max_drawdown:.2%}")
-    print(f"  {'Calmar ratio':<30} {_fmt(m.calmar_ratio)}")
-    print(f"  {'Omega ratio':<30} {_fmt(m.omega_ratio)}")
+    print(f"  {'Calmar ratio':<30} {_fmt_metric(m.calmar_ratio)}")
+    print(f"  {'Omega ratio':<30} {_fmt_metric(m.omega_ratio)}")
     print(f"  {'Block-bootstrap p (mean)':<30} {m.p_value:.4f}")
     print(f"  {'Fisher combined p':<30} {m.combined_p_value:.6f}  (approx: windows not fully independent)")
 
@@ -267,6 +355,21 @@ def _print_summary(result: BacktestResult) -> None:
         print(f"  {'White Reality Check p':<30} {m.reality_check_p_value:.6f}  ← data-snooping corrected")
     else:
         print(f"  {'White Reality Check p':<30} N/A (no parameter grid)")
+
+    # Trade diagnostics
+    print()
+    print(f"  {'── Trade diagnostics ──'}")
+    total_trades = sum(len(w.simulation_result.trades) for w in result.valid_windows)
+    print(f"  {'Total trades':<30} {total_trades}")
+    if not math.isnan(m.exposure_fraction):
+        print(f"  {'Avg exposure':<30} {m.exposure_fraction:.1%}  (fraction of bars in-market)")
+    if not math.isnan(m.win_rate):
+        print(f"  {'Win rate':<30} {m.win_rate:.1%}")
+    if not math.isnan(m.avg_win_loss_ratio):
+        wl_str = f"{m.avg_win_loss_ratio:.2f}×" if not math.isinf(m.avg_win_loss_ratio) else "∞ (no losses)"
+        print(f"  {'Avg win / avg loss':<30} {wl_str}")
+    if not math.isnan(m.avg_holding_days):
+        print(f"  {'Avg holding period':<30} {m.avg_holding_days:.1f} days")
 
     print()
     _verdict(m.combined_p_value, m.reality_check_p_value)
@@ -320,25 +423,18 @@ def _print_comparison(
 
     def best3(a: float, b: float, c: float, higher_is_better: bool = True) -> tuple[str, str, str]:
         """Return (ma_str, kalman_str, momentum_str) with ✓ on the best."""
-        def _fmt_val(v: float) -> str:
-            if math.isnan(v):
-                return "N/A"
-            if abs(v) == float("inf"):
-                return "∞"
-            return f"{v:.3f}"
-
         # Skip inf and nan when finding the best finite value
         finite = [(i, v) for i, v in enumerate([a, b, c])
                   if not math.isnan(v) and abs(v) != float("inf")]
         if not finite:
-            return _fmt_val(a), _fmt_val(b), _fmt_val(c)
+            return _fmt_metric(a, "∞"), _fmt_metric(b, "∞"), _fmt_metric(c, "∞")
 
         best_val = max(v for _, v in finite) if higher_is_better else min(v for _, v in finite)
         best_idxs = {i for i, v in finite if v == best_val}
 
         results = []
         for i, v in enumerate([a, b, c]):
-            s = _fmt_val(v)
+            s = _fmt_metric(v, "∞")
             if i in best_idxs and abs(v) != float("inf"):
                 s += " ✓"
             results.append(s)
@@ -349,10 +445,11 @@ def _print_comparison(
         if any(math.isnan(x) for x in [a, b, c]):
             return f"{a:.4f}", f"{b:.4f}", f"{c:.4f}"
         best_val = min(a, b, c)
-        def fmt(v: float) -> str:
-            s = f"{v:.4f}"
-            return s + " ✓" if v == best_val else s
-        return fmt(a), fmt(b), fmt(c)
+        return (
+            f"{a:.4f}" + (" ✓" if a == best_val else ""),
+            f"{b:.4f}" + (" ✓" if b == best_val else ""),
+            f"{c:.4f}" + (" ✓" if c == best_val else ""),
+        )
 
     print(f"  {'Metric':<28}  {'MA Cross':>10}  {'Kalman':>10}  {'Momentum':>10}")
     print("  " + "─" * 66)
@@ -391,6 +488,10 @@ def _run_cost_sensitivity(
     ma_result: BacktestResult | None,
     kalman_result: BacktestResult | None,
     momentum_result: BacktestResult | None,
+    output_dir: Path = Path("."),
+    train_yrs: int = TRAINING_WINDOW_YEARS,
+    test_yrs: int = TESTING_WINDOW_YEARS,
+    bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
 ) -> None:
     """
     Sweep over (transaction_cost_rate, slippage_factor) grids and show how
@@ -399,8 +500,8 @@ def _run_cost_sensitivity(
     The breakeven cost - where Fisher p crosses 0.05 - is the most practically
     important single number for deciding whether to pursue a strategy live.
 
-    Set n_workers > 1 in cost_sensitivity_sweep() to parallelise across CPU cores.
-    On an 8-core machine this reduces a ~12-minute sequential sweep to ~2 minutes.
+    bootstrap_seed is forwarded to every walk_forward call in the sweep so that
+    results are reproducible when --seed is passed on the CLI.
     """
     cost_rates   = [0.0001, 0.0005, 0.001, 0.002, 0.005]
     slip_factors = [0.0, 0.025, 0.05, 0.10, 0.20]
@@ -412,6 +513,9 @@ def _run_cost_sensitivity(
         data, MovingAverageStrategy(),
         cost_rates=cost_rates,
         slippage_factors=slip_factors,
+        training_window_years=train_yrs,
+        testing_window_years=test_yrs,
+        bootstrap_seed=bootstrap_seed,
     )
 
     print("  Running Kalman cost sensitivity sweep...")
@@ -419,6 +523,9 @@ def _run_cost_sensitivity(
         data, KalmanFilterStrategy(),
         cost_rates=cost_rates,
         slippage_factors=slip_factors,
+        training_window_years=train_yrs,
+        testing_window_years=test_yrs,
+        bootstrap_seed=bootstrap_seed,
     )
 
     print("  Running Momentum cost sensitivity sweep...\n")
@@ -426,12 +533,15 @@ def _run_cost_sensitivity(
         data, MomentumStrategy(),
         cost_rates=cost_rates,
         slippage_factors=slip_factors,
+        training_window_years=train_yrs,
+        testing_window_years=test_yrs,
+        bootstrap_seed=bootstrap_seed,
     )
 
     for name, sweep in sweeps.items():
         _print_cost_table(name, sweep, cost_rates, slip_factors)
 
-    _save_cost_heatmap(sweeps, cost_rates, slip_factors)
+    _save_cost_heatmap(sweeps, cost_rates, slip_factors, output_dir=output_dir)
 
 
 def _print_cost_table(
@@ -457,8 +567,15 @@ def _save_cost_heatmap(
     sweeps: dict[str, dict[tuple[float, float], float]],
     cost_rates: list[float],
     slip_factors: list[float],
+    output_dir: Path = Path("."),
 ) -> None:
-    """Save interactive cost sensitivity heatmap as HTML."""
+    """Save interactive cost sensitivity heatmap as HTML.
+
+    Uses include_plotlyjs=True (embeds ~3 MB of JS) rather than 'cdn' so the
+    file is genuinely self-contained and works offline. The README previously
+    claimed 'self-contained HTML, no server required' while depending on a CDN;
+    embedding makes that claim accurate.
+    """
     try:
         import plotly.graph_objects as go
         import plotly.subplots as sp
@@ -512,13 +629,14 @@ def _save_cost_heatmap(
         fig.update_xaxes(title_text="Slippage factor")
         fig.update_yaxes(title_text="Transaction cost rate")
 
-        path = Path("cost_sensitivity.html")
-        fig.write_html(str(path), include_plotlyjs="cdn", full_html=True)
+        path = output_dir / "cost_sensitivity.html"
+        # include_plotlyjs=True embeds the full Plotly JS bundle (~3 MB) so the
+        # dashboard is genuinely self-contained and works offline.
+        fig.write_html(str(path), include_plotlyjs=True, full_html=True)
         print(f"  Cost sensitivity heatmap → {path.resolve()}")
 
     except ImportError:
-        # plotly is listed as an optional dependency. The cost sweep still runs
-        # and prints its table; only the HTML heatmap is skipped.
+        # plotly is listed as a core dependency - if missing, re-install.
         print("  (Cost heatmap skipped: plotly not installed. Run `pip install plotly`.)")
     except Exception as e:
         # Unexpected plotly rendering error - surface it rather than swallowing.

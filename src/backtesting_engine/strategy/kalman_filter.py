@@ -282,6 +282,18 @@ class KalmanFilterStrategy(BaseStrategy):
             "log_likelihood": self.log_likelihood_,
         }
 
+    def format_params(self) -> str:
+        """Return compact string e.g. 'SNR=1.23e-03'."""
+        snr = self.q_ / max(self.r_, 1e-300)
+        return f"SNR={snr:.2e}"
+
+    def param_evolution_spec(self) -> list[tuple[str, str]]:
+        """Two lines: SNR and log-likelihood over time."""
+        return [
+            ("Q/R signal-to-noise ratio", "snr"),
+            ("Log-likelihood", "log_likelihood"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Core Kalman recursions - pure NumPy, no dependencies

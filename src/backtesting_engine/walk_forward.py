@@ -31,6 +31,7 @@ from scipy import stats
 
 from backtesting_engine.config import (
     ANNUALISATION_FACTOR,
+    BLOCK_BOOTSTRAP_SEED,
     TESTING_WINDOW_YEARS,
     TRAINING_WINDOW_YEARS,
 )
@@ -47,6 +48,7 @@ def walk_forward(
     training_window_years: int = TRAINING_WINDOW_YEARS,
     testing_window_years: int = TESTING_WINDOW_YEARS,
     execution: ExecutionConfig | None = None,
+    bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
 ) -> BacktestResult:
     """
     Perform walk-forward validation with execution config, Reality Check,
@@ -59,11 +61,16 @@ def walk_forward(
         training_window_years: Years per training window.
         testing_window_years: Years per test window.
         execution: ExecutionConfig controlling costs, slippage, and delay.
-                   Defaults to standard config (no slippage, no delay).
+                   Defaults to ExecutionConfig() - 0.1% cost, 5% slippage,
+                   1-day signal delay. Pass ExecutionConfig(transaction_cost_rate=0,
+                   slippage_factor=0, signal_delay=0) for zero-friction testing.
+        bootstrap_seed: Random seed for block bootstrap and Reality Check
+                        resampling. Override for reproducibility studies or
+                        to verify results are not seed-dependent.
 
     Returns:
         BacktestResult with per-window results, Fisher combined p-value,
-        White's Reality Check p-value, parameter evolution, and skipped count.
+        White's Reality Check p-value, parameter evolution, and flat-cash count.
 
     Raises:
         ValueError: If no valid windows could be evaluated, or if
@@ -83,7 +90,7 @@ def walk_forward(
 
     window_start = 0
     window_results: list[WindowResult] = []
-    skipped = 0
+    flat_cash_windows = 0
 
     # Collect (short, long) → returns dicts per window, for Reality Check.
     # Key insight: these are TEST-period returns for every candidate, collected
@@ -100,8 +107,12 @@ def walk_forward(
         # ── Step 1: Calibrate parameters in-sample ──────────────────────
         strategy.fit(train_data)
 
-        # ── Step 2: Extract active params for WindowResult ──────────────
-        active_params = _extract_active_params(strategy)
+        # ── Step 2: Record calibrated parameters for this window ─────────
+        # Stored on WindowResult for the dashboard parameter evolution panel
+        # and to allow re-running any individual window without re-fitting.
+        active_params = strategy.active_params()
+        formatted_params = strategy.format_params()
+        param_evo_spec = strategy.param_evolution_spec()
 
         # ── Step 3: Generate signals with warmup context ─────────────────
         context_data = _get_context(strategy, train_data)
@@ -111,17 +122,27 @@ def walk_forward(
         sim = run_simulation_with_execution(test_data, signals, execution)
 
         if not sim.trades:
+            # A window with no trades is NOT missing data - the strategy held
+            # cash for the entire period.  Flat-cash metrics are meaningful:
+            # Sharpe = 0 (no return, no volatility), drawdown = 0, etc.
+            # Excluding them from the summary overstates the strategy's
+            # risk-adjusted performance on windows where it actually traded.
+            # We record them as valid windows with flat-cash portfolio values
+            # so the stitched equity curve and benchmark comparison are correct.
+            flat_cash_metrics = _flat_cash_metrics()
             window_results.append(WindowResult(
                 train_start=data.index[window_start],
                 train_end=data.index[train_end - 1],
                 test_start=data.index[train_end],
                 test_end=data.index[test_end - 1],
                 simulation_result=sim,
-                metrics_result=_empty_metrics(),
-                skipped=True,
+                metrics_result=flat_cash_metrics,
+                skipped=False,  # cash-holding is a valid strategy state
                 active_params=active_params,
+                formatted_params=formatted_params,
+                param_evolution_spec=param_evo_spec,
             ))
-            skipped += 1
+            flat_cash_windows += 1
             window_start += test_days
             continue
 
@@ -135,7 +156,7 @@ def walk_forward(
                 "Simulation returned None portfolio_values. "
                 "This indicates a bug in run_simulation_with_execution()."
             )
-        metrics = calculate_metrics(sim.portfolio_values)
+        metrics = calculate_metrics(sim.portfolio_values, trades=sim.trades, seed=bootstrap_seed)
 
         window_results.append(WindowResult(
             train_start=data.index[window_start],
@@ -146,6 +167,8 @@ def walk_forward(
             metrics_result=metrics,
             skipped=False,
             active_params=active_params,
+            formatted_params=formatted_params,
+            param_evolution_spec=param_evo_spec,
         ))
 
         # ── Step 6: Collect TEST-period candidate returns ─────────────────
@@ -164,20 +187,30 @@ def walk_forward(
             "years of data."
         )
 
-    valid = [w for w in window_results if not w.skipped]
-    if not valid:
+    # All windows are now valid (flat-cash windows are included with Sharpe=0,
+    # p=1.0).  'valid' is simply all window_results since skipped is always False.
+    valid = window_results
+
+    # Guard: if every single window was flat-cash (zero trades across the entire
+    # dataset), the strategy never generated a signal.  This usually means the
+    # calibration produced degenerate parameters.  Surface a clear error rather
+    # than silently returning a result that looks valid but says nothing.
+    total_trades = sum(len(w.simulation_result.trades) for w in valid)
+    if total_trades == 0:
         raise ValueError(
-            "Every window was skipped - no trades generated. "
-            "Check strategy parameters and data range."
+            f"Strategy '{strategy.__class__.__name__}' generated zero trades across "
+            f"all {len(valid)} walk-forward windows.  "
+            "Check that strategy parameters produce signals on this data range.  "
+            "If using custom parameters, try widening the grid or reducing window sizes."
         )
 
-    summary = _build_summary_metrics(valid, window_candidate_returns)
+    summary = _build_summary_metrics(valid, window_candidate_returns, bootstrap_seed=bootstrap_seed)
 
     return BacktestResult(
         strategy_name=strategy.__class__.__name__,
         window_results=window_results,
         summary_metrics=summary,
-        skipped_window_count=skipped,
+        flat_cash_window_count=flat_cash_windows,
     )
 
 
@@ -202,18 +235,6 @@ def _get_context(strategy: BaseStrategy, train_data: pd.DataFrame) -> pd.DataFra
     return train_data.iloc[-n:]
 
 
-def _extract_active_params(strategy: BaseStrategy) -> dict[str, object]:
-    """
-    Extract calibrated parameters from the strategy for WindowResult storage.
-
-    Delegates to strategy.active_params() - the standard BaseStrategy interface.
-    All strategies that calibrate parameters during fit() override active_params()
-    to return their current calibrated values. The orchestrator does not need to
-    know which strategy it is talking to.
-    """
-    return strategy.active_params()
-
-
 # ---------------------------------------------------------------------------
 # Summary metrics aggregation
 # ---------------------------------------------------------------------------
@@ -221,6 +242,7 @@ def _extract_active_params(strategy: BaseStrategy) -> dict[str, object]:
 def _build_summary_metrics(
     valid_windows: list[WindowResult],
     window_candidate_returns: list[dict[Any, pd.Series]],
+    bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
 ) -> MetricsResult:
     """
     Aggregate per-window metrics with Fisher combined p and Reality Check p.
@@ -238,6 +260,9 @@ def _build_summary_metrics(
       can span window boundaries; per-window averaging misses cross-window
       drawdowns and overstates the ratio by up to 3x.
     - inf values are excluded from means (treated as undefined for that window).
+      Note: flat-cash windows no longer produce inf - they contribute
+      sortino=0.0 and omega=1.0, so they correctly participate in means.
+      inf may still appear if a non-flat-cash window produces extreme values.
 
     Reality Check uses test-period returns of every candidate from every
     window. build_candidate_return_matrix() intersects the candidate keys
@@ -270,7 +295,7 @@ def _build_summary_metrics(
                 for w in window_candidate_returns
             ]
             candidate_matrix = build_candidate_return_matrix(arr_dicts)
-            rc_p = white_reality_check(candidate_matrix)
+            rc_p = white_reality_check(candidate_matrix, seed=bootstrap_seed)
         except ValueError:
             # build_candidate_return_matrix raises ValueError when no
             # candidate parameter pair was evaluated in every window -
@@ -288,6 +313,14 @@ def _build_summary_metrics(
         p_value=mean_metric("p_value"),
         combined_p_value=fisher_p,
         reality_check_p_value=rc_p,
+        # Trade diagnostics - aggregate across all valid windows.
+        # Exposure: mean across windows (each window's fraction of in-market bars).
+        # Win rate, avg_wl, avg_hold: means across windows, ignoring NaN.
+        exposure_fraction=mean_metric("exposure_fraction"),
+        trade_count=sum(w.metrics_result.trade_count for w in valid_windows),
+        win_rate=mean_metric("win_rate"),
+        avg_win_loss_ratio=mean_metric("avg_win_loss_ratio"),
+        avg_holding_days=mean_metric("avg_holding_days"),
     )
 
 
@@ -344,10 +377,37 @@ def _fisher_combined_p(p_values: list[float]) -> float:
     return float(stats.chi2.sf(chi2_stat, 2 * len(p_values)))
 
 
-def _empty_metrics() -> MetricsResult:
-    nan = float("nan")
+def _flat_cash_metrics() -> MetricsResult:
+    """
+    Metrics for a window where the strategy held cash (no trades executed).
+
+    Design choices:
+    - sharpe_ratio = 0.0:  zero return, zero volatility → Sharpe is 0, not NaN.
+    - sortino_ratio = 0.0: zero excess return. Using inf is tempting (no downside)
+      but inf is excluded from summary means, meaning flat-cash windows would be
+      silently dropped from aggregate Sortino - overstating it. 0.0 is the correct
+      neutral value: the strategy earned nothing, so it added no risk-adjusted value.
+    - omega_ratio = 1.0:  Omega = E[gains above threshold] / E[losses below threshold].
+      With zero returns and zero threshold, numerator = 0, denominator = 0. 1.0 is
+      the neutral value (gains = losses = 0 → ratio is undefined, but 1.0 = "break even").
+      Like Sortino, using inf would silently exclude these windows from the mean.
+    - max_drawdown = 0.0:  no position → no drawdown.
+    - calmar_ratio = nan:  undefined (no drawdown denominator).
+    - p_value = 1.0:       maximally consistent with H₀ (no genuine edge).
+    - exposure_fraction = 0.0: held cash 100% of the window.
+    """
     return MetricsResult(
-        sharpe_ratio=nan, sortino_ratio=nan, max_drawdown=nan,
-        calmar_ratio=nan, omega_ratio=nan, p_value=nan,
-        combined_p_value=nan, reality_check_p_value=nan,
+        sharpe_ratio=0.0,
+        sortino_ratio=0.0,       # was inf - caused silent exclusion from summary mean
+        max_drawdown=0.0,
+        calmar_ratio=float("nan"),
+        omega_ratio=1.0,         # was inf - caused silent exclusion from summary mean
+        p_value=1.0,
+        combined_p_value=float("nan"),
+        reality_check_p_value=float("nan"),
+        exposure_fraction=0.0,
+        trade_count=0,
+        win_rate=float("nan"),
+        avg_win_loss_ratio=float("nan"),
+        avg_holding_days=float("nan"),
     )

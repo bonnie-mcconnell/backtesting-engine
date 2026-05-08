@@ -1,26 +1,39 @@
 """
-Trade execution simulator (baseline, no slippage or signal delay).
+Trade execution simulator - baseline, cost-only, no slippage or signal delay.
 
-Processes a price DataFrame and a signal Series to produce a SimulationResult:
-the list of executed trades and the daily portfolio value series.
+This module provides `run_simulation()`: a readable, bar-by-bar implementation
+of the core execution loop used for unit testing and as a transparent reference.
 
-This is the original, cost-only simulator. For walk-forward runs, prefer
-run_simulation_with_execution() from execution.py, which adds slippage,
-signal delay, and a configurable ExecutionConfig. This module is retained
-because test_simulator.py exercises it directly and its explicit bar-by-bar
-loop makes the execution model easy to read and reason about line by line.
+Relationship to `execution.py`
+-------------------------------
+`run_simulation_with_execution()` in execution.py is the production path used
+by all walk-forward runs. It extends this baseline with:
+  - Configurable slippage (fill at close ± fraction × daily range)
+  - Configurable signal delay (shift signals forward N bars)
+  - `ExecutionConfig` dataclass for per-run parameter control
 
-Execution model:
-  - Signals are processed bar-by-bar in chronological order.
-  - A buy signal when flat opens a long position at that bar's closing price.
-  - A sell signal when long closes the position at that bar's closing price.
-  - Only one position can be held at a time (no pyramiding, no short selling).
-  - Transaction costs are applied symmetrically on entry and exit.
-  - Any position still open at the end of the window is closed at the final bar.
+`run_simulation()` here is the zero-slippage, zero-delay baseline. It always
+uses the global `TRANSACTION_COST_RATE` and fills at the signal bar's close
+price. This is the "best case" execution model.
 
-The loop is intentionally explicit rather than vectorised. This makes the
-execution logic transparent and line-by-line testable, at the cost of speed.
-For daily data over a single asset across decades, the performance is fine.
+When to use which:
+  - `run_simulation()`: unit tests that verify execution logic on synthetic
+    close-only data, and the backward-compatibility test in test_execution.py.
+  - `run_simulation_with_execution()`: everything else, including all walk-forward
+    runs. Always pass an explicit `ExecutionConfig` to document your assumptions.
+
+Execution model (applies to both):
+  - Signals processed bar-by-bar in chronological order.
+  - Buy signal when flat → open long at that bar's closing price.
+  - Sell signal when long → close position at that bar's closing price.
+  - Only one position at a time (no pyramiding, no short selling).
+  - Transaction costs applied symmetrically on entry and exit.
+  - Position still open at end of window → force-closed at final bar's close.
+  - Position sizing: `position_value = cash × fraction / (1 + cost_rate)`
+    so that entry spend + fee exactly equals available cash (no leverage).
+
+The loop is intentionally explicit rather than vectorised. Transparency over
+speed. For daily data on a single asset over 30 years the runtime is fine.
 """
 
 from dataclasses import dataclass
@@ -98,7 +111,10 @@ def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:
 
         if position is None and signal == 1:
             # Open long position.
-            position_value = cash * POSITION_SIZE_FRACTION
+            # Size so cost-inclusive spend fits within available cash:
+            #   position_value = cash * POSITION_SIZE_FRACTION / (1 + cost_rate)
+            available = cash * POSITION_SIZE_FRACTION
+            position_value = available / (1.0 + TRANSACTION_COST_RATE)
             buy_cost = position_value * TRANSACTION_COST_RATE
             shares = position_value / current_price
             cash -= position_value + buy_cost

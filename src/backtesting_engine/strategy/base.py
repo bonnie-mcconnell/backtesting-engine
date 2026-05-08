@@ -204,6 +204,56 @@ class BaseStrategy(ABC):
         """
         return {}
 
+    def format_params(self) -> str:
+        """
+        Return a compact human-readable string of the current active parameters.
+
+        Used by the CLI results table and anywhere parameters are displayed
+        in text form. The default implementation calls str(self.active_params()).
+        Strategies override this to return a more readable format - for example,
+        MovingAverageStrategy returns 'MA(50/200)' rather than a raw dict.
+
+        This method exists so that main.py never needs to inspect which strategy
+        it is talking to. Adding a new strategy only requires implementing this
+        method in the new class, not editing the orchestrator.
+
+        Returns:
+            A compact string, e.g. 'MA(50/200)', 'SNR=1.23e-03', 'MOM(90)'.
+            Empty string for parameter-free strategies.
+        """
+        params = self.active_params()
+        if not params:
+            return ""
+        return str(params)
+
+    def param_evolution_spec(self) -> list[tuple[str, str]]:
+        """
+        Return a specification for the parameter evolution dashboard panel.
+
+        Each element is a (y_axis_label, active_params_key) pair describing
+        one line to plot across walk-forward windows. The dashboard uses this
+        to render the parameter evolution panel without knowing which strategy
+        class it is talking to.
+
+        Default returns a generic spec derived from active_params() keys.
+        Strategies with multiple parameters (e.g. MA short/long windows)
+        override this to return one entry per line in the plot.
+
+        Returns:
+            List of (display_label, active_params_key) tuples.
+            Empty list means no parameter evolution panel (parameter-free strategy).
+
+        Examples:
+            MA:    [("Short window (days)", "short_window"), ("Long window (days)", "long_window")]
+            Kalman:[("Q/R signal-to-noise ratio", "snr"), ("Log-likelihood", "log_likelihood")]
+            Momentum: [("Lookback (days)", "lookback")]
+        """
+        params = self.active_params()
+        if not params:
+            return []
+        # Generic fallback: one line per key, label is the key name.
+        return [(str(k), str(k)) for k in params]
+
     def context_window_size(self) -> int:
         """
         Return the number of bars of warmup history needed before signals are valid.

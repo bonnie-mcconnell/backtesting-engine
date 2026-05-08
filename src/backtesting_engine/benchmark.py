@@ -36,6 +36,7 @@ Grinold, R. & Kahn, R. (2000). Active Portfolio Management (2nd ed.).
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -47,6 +48,9 @@ from backtesting_engine.config import (
 )
 from backtesting_engine.metrics import _max_drawdown, _sharpe, _sortino
 from backtesting_engine.models import BacktestResult
+
+if TYPE_CHECKING:
+    from backtesting_engine.execution import ExecutionConfig
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,7 @@ class BenchmarkResult:
 def compute_benchmark(
     result: BacktestResult,
     data: pd.DataFrame,
+    execution: "ExecutionConfig | None" = None,
 ) -> BenchmarkResult:
     """
     Compute buy-and-hold benchmark metrics over the same windows as a BacktestResult.
@@ -105,23 +110,22 @@ def compute_benchmark(
     test window and closed at the end, with the same transaction cost applied on
     entry and exit.
 
-    The information ratio is computed from per-bar active returns - the difference
-    between the strategy's daily return and the buy-and-hold daily return on each
-    bar. This is the Grinold & Kahn (2000) definition: IR = mean(active) / std(active)
-    annualised by sqrt(252). Using per-window Sharpe differences instead would give
-    a dimensionally inconsistent "Sharpe ratio of Sharpe ratios", not a true IR.
-
     Args:
-        result: BacktestResult from walk_forward(). Provides window boundaries,
-                portfolio value series, and per-window Sharpe ratios.
+        result: BacktestResult from walk_forward().
         data: The full price DataFrame used for the original walk_forward() call.
+        execution: ExecutionConfig used for the strategy run. When provided,
+                   the benchmark applies the same transaction_cost_rate so the
+                   comparison is apples-to-apples. Defaults to the global
+                   TRANSACTION_COST_RATE constant for backward compatibility.
 
     Returns:
         BenchmarkResult with per-window and aggregate comparison metrics.
 
     Raises:
-        ValueError: If result has no valid (non-skipped) windows.
+        ValueError: If result has no valid windows (all windows were flat-cash with zero total trades).
     """
+    cost_rate = execution.transaction_cost_rate if execution is not None else TRANSACTION_COST_RATE
+
     valid = result.valid_windows
     if not valid:
         raise ValueError("BacktestResult has no valid windows to benchmark against.")
@@ -134,7 +138,7 @@ def compute_benchmark(
 
     for window in valid:
         window_data = data.loc[window.test_start:window.test_end, "close"]
-        bh_returns = _buy_and_hold_returns(window_data)
+        bh_returns = _buy_and_hold_returns(window_data, cost_rate=cost_rate)
         benchmark_sharpes.append(_sharpe(bh_returns))
         benchmark_sortinos.append(_sortino(bh_returns))
         benchmark_drawdowns.append(_max_drawdown(bh_returns))
@@ -187,16 +191,21 @@ def compute_benchmark(
     )
 
 
-def _buy_and_hold_returns(close: pd.Series) -> np.ndarray:
+def _buy_and_hold_returns(
+    close: pd.Series,
+    cost_rate: float = TRANSACTION_COST_RATE,
+) -> np.ndarray:
     """
     Daily returns for a buy-and-hold position over a price series.
 
-    Applies a round-trip transaction cost at entry and exit. The entry cost
-    reduces the effective first-day return; the exit cost reduces the last.
-    All intermediate returns are unadjusted.
+    Applies cost_rate as a round-trip transaction cost at entry and exit.
+    The entry cost reduces the effective first-day return; the exit cost
+    reduces the last. All intermediate returns are unadjusted.
 
     Args:
         close: Closing price series for one test window.
+        cost_rate: Transaction cost rate per side. Should match the rate used
+                   by the strategy being benchmarked (pass from ExecutionConfig).
 
     Returns:
         Array of daily returns, same length as len(close) - 1.
@@ -210,7 +219,7 @@ def _buy_and_hold_returns(close: pd.Series) -> np.ndarray:
     # Entry cost on day 0: deduct from first day's return.
     # Exit cost on last day: deduct from last day's return.
     # This mirrors how run_simulation applies costs.
-    returns[0] -= TRANSACTION_COST_RATE
-    returns[-1] -= TRANSACTION_COST_RATE
+    returns[0] -= cost_rate
+    returns[-1] -= cost_rate
 
     return returns

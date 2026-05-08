@@ -3,27 +3,49 @@ backtesting-engine - Walk-forward validated backtesting with statistical rigour.
 
 Public API
 ----------
-Run both strategies with a single call:
+Run all three strategies with one call:
 
-    from backtesting_engine import walk_forward, MovingAverageStrategy, KalmanFilterStrategy
+    from backtesting_engine import walk_forward, MovingAverageStrategy
     from backtesting_engine import ExecutionConfig, build_dashboard, load_data, validate_data
 
-    data = load_data("SPY", "1993-01-01")
+    data = load_data("SPY", "1993-01-01", end_date="2024-12-31")
     validate_data(data, min_rows=1260)
 
-    result = walk_forward(
+    # Default ExecutionConfig: 0.1% cost, 5% slippage, 1-day signal delay.
+    # This matches the CLI defaults and the README examples - conservative
+    # retail execution out of the box.
+    result = walk_forward(data, MovingAverageStrategy())
+
+    # Override execution parameters explicitly when needed:
+    result_low_cost = walk_forward(
         data,
         MovingAverageStrategy(),
-        execution=ExecutionConfig(slippage_factor=0.05, signal_delay=1),
+        execution=ExecutionConfig(transaction_cost_rate=0.0001, slippage_factor=0.01),
     )
+
     build_dashboard(result, output_path=Path("dashboard.html"))
+
+Zero-friction (strategy logic verification, no execution model):
+
+    from backtesting_engine import ExecutionConfig, walk_forward
+    result = walk_forward(
+        data, strategy,
+        execution=ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0),
+    )
 
 For cost sensitivity analysis:
 
     from backtesting_engine import cost_sensitivity_sweep
-    sweep = cost_sensitivity_sweep(data, MovingAverageStrategy(),
-                                   cost_rates=[0.001, 0.002],
-                                   slippage_factors=[0.0, 0.05])
+    sweep = cost_sensitivity_sweep(
+        data, MovingAverageStrategy(),
+        cost_rates=[0.0001, 0.001, 0.005],
+        slippage_factors=[0.0, 0.05, 0.10],
+    )
+
+Reproducible frozen runs (same output every time):
+
+    from backtesting_engine.config import BLOCK_BOOTSTRAP_SEED
+    result = walk_forward(data, MovingAverageStrategy(), bootstrap_seed=BLOCK_BOOTSTRAP_SEED)
 """
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark

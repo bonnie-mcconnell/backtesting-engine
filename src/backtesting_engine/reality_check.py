@@ -64,6 +64,10 @@ test rejects but the Reality Check does not, you have a data snooping
 problem - the apparent significance came from searching, not from edge.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import numpy as np
 
 from backtesting_engine.config import BLOCK_BOOTSTRAP_SEED, N_PERMUTATIONS
@@ -187,31 +191,36 @@ def _stationary_bootstrap_resample(
 
 
 def build_candidate_return_matrix(
-    window_candidate_returns: list[dict[tuple[int, int], np.ndarray]],
+    window_candidate_returns: list[dict[Any, np.ndarray]],
 ) -> np.ndarray:
     """
     Assemble a (T_total, k) return matrix from per-window candidate returns.
 
-    Each walk-forward window produces a dictionary mapping (short, long)
-    parameter pairs to daily return arrays for the test period of that
-    window. This function stitches those arrays together across windows
-    for each candidate.
+    Each walk-forward window produces a dictionary mapping a parameter key
+    to daily return arrays for the test period of that window:
+      - MovingAverageStrategy: key is (short_window, long_window) tuple
+      - MomentumStrategy:      key is lookback int
+      - Any new strategy:      key is whatever active_params() uses
 
-    Only candidates present in ALL windows are included (intersection).
-    Candidates that were not evaluated in some window (because the window
-    was too short for that parameter pair) are dropped.
+    This function stitches return arrays together across windows for each
+    parameter key. Only keys present in ALL windows are included (intersection)
+    so the matrix is rectangular. Keys not evaluated in some window (e.g.
+    because the window was too short for that parameter combination) are dropped.
 
     Args:
         window_candidate_returns: List of dicts, one per walk-forward window.
-            Each dict maps (short, long) → daily_returns np.ndarray.
+            Each dict maps a parameter key → daily_returns np.ndarray.
+            All dicts in the list must use the same key type (e.g. all tuples
+            or all ints - never mix key types across windows in one call).
 
     Returns:
         2D array of shape (T_total, k) where T_total is the total number
         of test-period days across all windows and k is the number of
-        candidates present in every window.
+        parameter keys present in every window.
 
     Raises:
-        ValueError: If no candidates are common across all windows.
+        ValueError: If no parameter keys are common across all windows,
+                    or if the input list is empty.
     """
     if not window_candidate_returns:
         raise ValueError("No window candidate returns provided.")

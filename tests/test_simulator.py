@@ -58,11 +58,17 @@ class TestCompleteCycle:
         assert trade.exit_price == 103.0
 
     def test_shares_computed_correctly(self, five_day_data: pd.DataFrame) -> None:
-        # shares = (portfolio * position_fraction) / entry_price
+        # Correct sizing: position_value = (portfolio * fraction) / (1 + cost_rate)
+        # so that position_value + buy_cost == portfolio * fraction exactly,
+        # leaving zero residual cash (no negative-cash / micro-leverage).
+        # Old formula: shares = (portfolio * fraction) / entry_price
+        #   → spent portfolio * fraction PLUS the fee → cash went negative.
         signals = pd.Series([0, 1, 0, -1, 0], index=five_day_data.index)
         trade = run_simulation(five_day_data, signals).trades[0]
-        expected = (INITIAL_PORTFOLIO_VALUE * POSITION_SIZE_FRACTION) / 101.0
-        assert np.isclose(trade.shares, expected, rtol=1e-5)
+        available = INITIAL_PORTFOLIO_VALUE * POSITION_SIZE_FRACTION
+        expected_position_value = available / (1.0 + TRANSACTION_COST_RATE)
+        expected_shares = expected_position_value / 101.0
+        assert np.isclose(trade.shares, expected_shares, rtol=1e-5)
 
     def test_transaction_costs(self, five_day_data: pd.DataFrame) -> None:
         # total costs = shares * (entry_price + exit_price) * rate

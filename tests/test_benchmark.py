@@ -24,12 +24,17 @@ from backtesting_engine.walk_forward import walk_forward
 
 @pytest.fixture
 def small_result() -> tuple[BacktestResult, pd.DataFrame]:
-    # with_high_low=True: benchmark uses data["close"] only, but walk_forward
-    # needs the full DataFrame to be passed through. Including high/low ensures
-    # the fixture mirrors the real call site in main.py.
+    # with_high_low=True: the new ExecutionConfig default (slippage=0.05)
+    # requires 'high' and 'low' columns. We use realistic defaults to mirror
+    # exactly what main.py does, making this fixture a faithful integration test.
     data = make_oscillating_data(756, with_high_low=True)
     strategy = MovingAverageStrategy(short_window=20, long_window=50)
-    result = walk_forward(data, strategy, training_window_years=1, testing_window_years=1)
+    from backtesting_engine.execution import ExecutionConfig
+    result = walk_forward(
+        data, strategy,
+        training_window_years=1, testing_window_years=1,
+        execution=ExecutionConfig(),   # explicit: 0.1% cost, 5% slippage, 1-day delay
+    )
     return result, data
 
 

@@ -237,18 +237,24 @@ class TestMonteCarloPValue:
         # The block bootstrap p-value for Sharpe tests autocorrelation exploitation,
         # NOT raw alpha. For iid returns, each resampled block preserves the mean,
         # so the null Sharpe distribution is centred near the observed Sharpe and
-        # p ~ 0.5 regardless of the strategy actual mean return.
+        # After the null-centering fix the block bootstrap correctly tests
+        # H₀: true mean return = 0.  Returns drawn from N(0.005, 0.01²) have
+        # an annualised Sharpe of ~0.005/0.01 × sqrt(252) ≈ 0.79, which is
+        # genuinely above zero.  The centred bootstrap should therefore produce
+        # a *low* p-value (strong evidence against H₀), not p≈0.5.
         #
-        # This is a known and documented limitation: the test has no power against
-        # iid alternatives. It gains power when the strategy exploits return
-        # autocorrelation (e.g. momentum) that block shuffling destroys.
-        #
-        # Asserting p in [0.2, 0.8] verifies the bootstrap behaves correctly
-        # for iid data, not that the strategy is uninformative.
+        # The previous test expected p≈0.5 because the old (broken) bootstrap
+        # resampled from the un-centred distribution and inherited the positive
+        # drift, making every bootstrapped Sharpe ≈ the observed Sharpe.
+        # That behaviour was a bug, not a feature.
         rng = np.random.default_rng(0)
         returns = rng.normal(loc=0.005, scale=0.01, size=252)
         p = _monte_carlo_p_value(returns)
-        assert 0.2 <= p <= 0.8
+        # Positive-drift iid returns should be detectably above zero-mean H₀.
+        assert p < 0.15, (
+            f"Expected low p-value for high-Sharpe iid returns, got p={p:.4f}. "
+            "Check that _monte_carlo_p_value centres returns before resampling."
+        )
 
     def test_flat_returns_high_p_value(self) -> None:
         # Near-zero Sharpe should produce a p-value near 0.5.

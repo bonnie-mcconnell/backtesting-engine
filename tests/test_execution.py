@@ -36,6 +36,13 @@ class TestExecutionConfig:
     def test_default_values(self) -> None:
         ec = ExecutionConfig()
         assert ec.transaction_cost_rate == TRANSACTION_COST_RATE
+        # Defaults now match CLI/README: conservative realistic execution
+        assert ec.slippage_factor == 0.05
+        assert ec.signal_delay == 1
+
+    def test_zero_friction_explicit(self) -> None:
+        """Zero-friction config is available; it must be explicit, not default."""
+        ec = ExecutionConfig(slippage_factor=0.0, signal_delay=0)
         assert ec.slippage_factor == 0.0
         assert ec.signal_delay == 0
 
@@ -65,21 +72,21 @@ class TestSlippage:
     def test_zero_slippage_fills_at_close(self) -> None:
         data = _ohlcv()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
+        result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
         assert result.trades[0].entry_price == data["close"].iloc[1]
 
     def test_positive_slippage_raises_buy_price(self) -> None:
         data = _ohlcv()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
-        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.2))
+        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
+        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.2, signal_delay=0))
         assert r_sl.trades[0].entry_price > r_no.trades[0].entry_price
 
     def test_slippage_reduces_pnl(self) -> None:
         data = _ohlcv()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0))
-        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.3))
+        r_no = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
+        r_sl = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.3, signal_delay=0))
         assert r_sl.trades[0].pnl < r_no.trades[0].pnl
 
     def test_slippage_requires_high_low_columns(self) -> None:
@@ -97,13 +104,13 @@ class TestSignalDelay:
     def test_delay_zero_executes_on_signal_bar(self) -> None:
         data = _close_only()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0))
+        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0, slippage_factor=0.0))
         assert result.trades[0].entry_price == data["close"].iloc[1]
 
     def test_delay_one_shifts_execution_by_one_bar(self) -> None:
         data = _close_only(n=7)
         signals = pd.Series([0, 1, 0, 0, -1, 0, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1))
+        result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1, slippage_factor=0.0))
         if result.trades:
             # Buy signal on bar 1 → executes at bar 2's price
             assert result.trades[0].entry_price == data["close"].iloc[2]
@@ -111,8 +118,8 @@ class TestSignalDelay:
     def test_delay_does_not_increase_trade_count(self) -> None:
         data = _close_only(n=10)
         signals = pd.Series([0, 1, 0, -1, 0, 1, 0, -1, 0, 0], index=data.index)
-        r0 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0))
-        r1 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1))
+        r0 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=0, slippage_factor=0.0))
+        r1 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1, slippage_factor=0.0))
         assert len(r1.trades) <= len(r0.trades)
 
 
@@ -128,7 +135,7 @@ class TestBackwardCompatibility:
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
 
         r_orig = run_simulation(data, signals)
-        r_new = run_simulation_with_execution(data, signals, ExecutionConfig())
+        r_new = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
 
         assert len(r_orig.trades) == len(r_new.trades)
         if r_orig.trades:
@@ -137,6 +144,6 @@ class TestBackwardCompatibility:
     def test_portfolio_always_positive(self) -> None:
         data = _close_only()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
-        result = run_simulation_with_execution(data, signals, ExecutionConfig())
+        result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
         assert result.portfolio_values is not None
         assert (result.portfolio_values > 0).all()

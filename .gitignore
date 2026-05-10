@@ -9,6 +9,9 @@ __pycache__/
 # Type checking
 .mypy_cache/
 
+# Linting
+.ruff_cache/
+
 # Testing
 .pytest_cache/
 htmlcov/

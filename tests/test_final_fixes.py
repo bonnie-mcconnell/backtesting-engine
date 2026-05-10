@@ -244,7 +244,7 @@ class TestFormatParams:
         import pathlib
         main_src = (
             pathlib.Path(__file__).parent.parent / "src/backtesting_engine/main.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         for key in ("short_window", "snr"):
             for q in ('"', "'"):
                 assert f"{q}{key}{q}" not in main_src, (
@@ -353,7 +353,7 @@ class TestParamEvolutionSpec:
         dash_src = (
             pathlib.Path(__file__).parent.parent
             / "src/backtesting_engine/dashboard.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         for key in ("short_window", "snr"):
             for q in ('"', "'"):
                 assert f"{q}{key}{q}" not in dash_src, (

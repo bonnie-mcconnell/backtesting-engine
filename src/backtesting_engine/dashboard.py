@@ -153,7 +153,10 @@ def build_dashboard(
     if has_param_evolution:
         _add_param_evolution(fig, result, row=4, col=1)
     else:
-        _add_cumulative_benchmark(fig, result, row=4, col=1)
+        # Pass price_data so the cumulative BH curve here is built from
+        # actual price changes - the same source used by panel 1 and benchmark.py.
+        # Without this, the fallback approximation disagrees with the other panels.
+        _add_cumulative_benchmark(fig, result, row=4, col=1, price_data=price_data)
 
     # Annotation: summary stats in title
     m = result.summary_metrics
@@ -430,18 +433,25 @@ def _add_window_sharpes(
     """
     Bar chart of per-window strategy Sharpe ratios.
 
-    When benchmark is provided, overlays the benchmark Sharpe per window as
-    a second bar series so the relative performance is visible for each window,
-    not just on average. Bars are coloured green when strategy beats benchmark,
-    red when it does not.
+    When benchmark is provided, each bar is coloured green/red based on
+    whether the strategy beat buy-and-hold *in that specific window* - not
+    against the aggregate mean benchmark Sharpe. This matters: a strategy
+    that beats a weak benchmark year in a declining market but loses to a
+    strong benchmark year is correctly coloured per window.
     """
     sharpes = [w.metrics_result.sharpe_ratio for w in valid_windows]
     labels = [f"{w.test_start.year}" for w in valid_windows]
 
-    # Colour by whether strategy beats benchmark (if available) or simply by sign.
-    if benchmark is not None:
-        bm_sharpe = benchmark.benchmark_sharpe
-        colors = [_POSITIVE if s >= bm_sharpe else _NEGATIVE for s in sharpes]
+    if benchmark is not None and benchmark.per_window_benchmark_sharpes:
+        # Use per-window benchmark Sharpe for accurate per-bar coloring.
+        per_window_bm = benchmark.per_window_benchmark_sharpes
+        n = min(len(sharpes), len(per_window_bm))
+        colors = []
+        for i, s in enumerate(sharpes):
+            bm_s = per_window_bm[i] if i < n else benchmark.benchmark_sharpe
+            colors.append(_POSITIVE if s >= bm_s else _NEGATIVE)
+    elif benchmark is not None:
+        colors = [_POSITIVE if s >= benchmark.benchmark_sharpe else _NEGATIVE for s in sharpes]
     else:
         colors = [_POSITIVE if s >= 0 else _NEGATIVE for s in sharpes]
 
@@ -468,8 +478,9 @@ def _add_window_sharpes(
         hovertemplate="%{customdata}<extra></extra>",
     ), row=row, col=col)
 
-    # Benchmark reference line - mean benchmark Sharpe across windows.
-    # Shows whether the strategy consistently beats buy-and-hold.
+    # Benchmark reference line: mean BH Sharpe across all windows.
+    # Bar coloring uses per-window BH Sharpe (accurate); this line shows the mean
+    # for a quick aggregate visual reference.
     if benchmark is not None:
         bm_sharpe = benchmark.benchmark_sharpe
         ir = benchmark.information_ratio
@@ -479,7 +490,7 @@ def _add_window_sharpes(
             line_color=_BENCHMARK,
             line_width=1.5,
             line_dash="dot",
-            annotation_text=f"BH Sharpe: {bm_sharpe:.2f}  (IR {ir:.2f}, beats {beats_pct}%)",
+            annotation_text=f"BH mean Sharpe: {bm_sharpe:.2f}  (IR {ir:.2f}, beats {beats_pct}%)",
             annotation_font=dict(color=_BENCHMARK, size=10),
             row=row, col=col,  # pyright: ignore[reportArgumentType]
         )
@@ -618,10 +629,19 @@ def _add_param_evolution(
 
 
 def _add_cumulative_benchmark(
-    fig: go.Figure, result: BacktestResult, row: int, col: int
+    fig: go.Figure,
+    result: BacktestResult,
+    row: int,
+    col: int,
+    price_data: pd.Series | None = None,
 ) -> None:
-    """Panel 6b fallback: cumulative return index (strategy vs benchmark)."""
-    equity, bh_curve = _build_equity_curves(result)
+    """Panel 6b fallback: cumulative return index (strategy vs benchmark).
+
+    Uses price_data when provided so the buy-and-hold curve is built from
+    actual price changes - the same source used by the equity curve panel
+    and benchmark.py. Without this the curves can visibly disagree.
+    """
+    equity, bh_curve = _build_equity_curves(result, price_data=price_data)
 
     strat_cum = (equity / equity.iloc[0] - 1) * 100
     bench_cum = (bh_curve / bh_curve.iloc[0] - 1) * 100

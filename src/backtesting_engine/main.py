@@ -51,7 +51,9 @@ from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
-_MIN_ROWS = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS
+def _min_rows(train_years: int, test_years: int) -> int:
+    """Minimum rows needed for at least one walk-forward window with the given window sizes."""
+    return (train_years + test_years) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -99,9 +101,10 @@ Examples:
         default=None,
         metavar="YYYY-MM-DD",
         help=(
-            "End date for historical data (default: today). "
-            "Set this to a fixed date to produce reproducible results that do not "
-            "change as new data arrives.  Example: --end 2024-12-31"
+            "End date for historical data, inclusive (default: today). "
+            "--end 2024-12-31 includes December 31 in the dataset. "
+            "Set a fixed end date for reproducible results that do not change "
+            "as new data arrives."
         ),
     )
     parser.add_argument(
@@ -178,23 +181,25 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    train_yrs = args.train_years
+    test_yrs  = args.test_years
+
     data = _load(
         args.ticker,
         args.start,
         end_date=args.end,
         use_cache=not args.no_cache,
+        train_years=train_yrs,
+        test_years=test_yrs,
     )
 
-    run_ma      = args.strategy in ("ma",      "all") and not args.costs_only
-    run_kalman  = args.strategy in ("kalman",  "all") and not args.costs_only
+    run_ma       = args.strategy in ("ma",       "all") and not args.costs_only
+    run_kalman   = args.strategy in ("kalman",   "all") and not args.costs_only
     run_momentum = args.strategy in ("momentum", "all") and not args.costs_only
 
-    ma_result      = None
-    kalman_result  = None
+    ma_result       = None
+    kalman_result   = None
     momentum_result = None
-
-    train_yrs = args.train_years
-    test_yrs  = args.test_years
 
     # ── Strategy 1: Moving Average ─────────────────────────────────────────
     if run_ma:
@@ -278,14 +283,25 @@ def _load(
     start_date: str,
     end_date: str | None = None,
     use_cache: bool = True,
+    train_years: int = TRAINING_WINDOW_YEARS,
+    test_years: int = TESTING_WINDOW_YEARS,
 ) -> pd.DataFrame:
     end_str = end_date or "today"
     print(f"Loading {ticker} from {start_date} to {end_str}...")
-    data = load_data(ticker, start_date, end_date=end_date, use_cache=use_cache)
-    validate_data(data, min_rows=_MIN_ROWS)
+
+    # yfinance treats end as exclusive: download(..., end="2024-12-31") returns
+    # data up to and including 2024-12-30. To include the user-specified end date,
+    # add one calendar day internally. This keeps the CLI contract inclusive
+    # ("--end 2024-12-31 means include Dec 31") while respecting yfinance's API.
+    yf_end: str | None = None
+    if end_date is not None:
+        from datetime import date, timedelta
+        yf_end = (date.fromisoformat(end_date) + timedelta(days=1)).isoformat()
+    data = load_data(ticker, start_date, end_date=yf_end, use_cache=use_cache)
+    validate_data(data, min_rows=_min_rows(train_years, test_years))
     print(
         f"  {len(data):,} trading days  "
-        f"({data.index[0].date()} – {data.index[-1].date()})\n"
+        f"({data.index[0].date()} \u2013 {data.index[-1].date()})\n"
     )
     return data
 
@@ -297,11 +313,18 @@ def _section(title: str) -> None:
 
 
 def _fmt_metric(v: float, fmt: str = ".3f") -> str:
-    """Format a float metric for console output, handling NaN and inf gracefully."""
+    """Format a float metric, handling NaN and inf gracefully.
+
+    Args:
+        v:   The metric value.
+        fmt: A valid Python format spec string (e.g. '.3f', '.2f').
+             Must never be a display symbol like '∞' - that caused a
+             ValueError: Unknown format code crash on the comparison table.
+    """
     if math.isnan(v):
         return "N/A"
     if abs(v) == float("inf"):
-        return "∞" if fmt != ".3f" else "∞ (no downside)"
+        return "\u221e (unbounded)"
     return format(v, fmt)
 
 
@@ -366,7 +389,7 @@ def _print_summary(result: BacktestResult) -> None:
     if not math.isnan(m.win_rate):
         print(f"  {'Win rate':<30} {m.win_rate:.1%}")
     if not math.isnan(m.avg_win_loss_ratio):
-        wl_str = f"{m.avg_win_loss_ratio:.2f}×" if not math.isinf(m.avg_win_loss_ratio) else "∞ (no losses)"
+        wl_str = f"{m.avg_win_loss_ratio:.2f}\u00d7" if not math.isinf(m.avg_win_loss_ratio) else "\u221e (no losses)"
         print(f"  {'Avg win / avg loss':<30} {wl_str}")
     if not math.isnan(m.avg_holding_days):
         print(f"  {'Avg holding period':<30} {m.avg_holding_days:.1f} days")
@@ -422,21 +445,20 @@ def _print_comparison(
         print(f"  {label:<28}  {ma_v:>10}  {ka_v:>10}  {mo_v:>10}")
 
     def best3(a: float, b: float, c: float, higher_is_better: bool = True) -> tuple[str, str, str]:
-        """Return (ma_str, kalman_str, momentum_str) with ✓ on the best."""
-        # Skip inf and nan when finding the best finite value
+        """Return (ma_str, kalman_str, momentum_str) with a checkmark on the best finite value."""
         finite = [(i, v) for i, v in enumerate([a, b, c])
                   if not math.isnan(v) and abs(v) != float("inf")]
         if not finite:
-            return _fmt_metric(a, "∞"), _fmt_metric(b, "∞"), _fmt_metric(c, "∞")
+            return _fmt_metric(a), _fmt_metric(b), _fmt_metric(c)
 
         best_val = max(v for _, v in finite) if higher_is_better else min(v for _, v in finite)
         best_idxs = {i for i, v in finite if v == best_val}
 
         results = []
         for i, v in enumerate([a, b, c]):
-            s = _fmt_metric(v, "∞")
-            if i in best_idxs and abs(v) != float("inf"):
-                s += " ✓"
+            s = _fmt_metric(v)
+            if i in best_idxs:
+                s += " \u2713"
             results.append(s)
         return results[0], results[1], results[2]
 

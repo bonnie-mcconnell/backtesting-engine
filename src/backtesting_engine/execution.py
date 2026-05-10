@@ -135,20 +135,15 @@ def run_simulation_with_execution(
     """
     Simulate trade execution with configurable execution realism.
 
-    This is a drop-in replacement for run_simulation() that accepts an
-    ExecutionConfig. With default ExecutionConfig, behaviour is identical
-    to run_simulation().
-
-    OHLCV data is required when slippage_factor > 0 (needs 'high' and 'low'
-    columns). If only 'close' is present and slippage_factor > 0, a
-    ValueError is raised.
-
     Args:
         data: OHLCV DataFrame with DatetimeIndex. Must have 'close'.
               If slippage_factor > 0, must also have 'high' and 'low'.
         signals: Integer signal series with values in {-1, 0, 1}.
-        execution: ExecutionConfig instance. Defaults to zero slippage,
-                   zero delay, standard transaction costs.
+        execution: ExecutionConfig instance. Defaults to cost=0.1%,
+                   slippage=5% of daily range, delay=1 bar - the same
+                   conservative realistic model used by the CLI.
+                   For zero-friction testing use:
+                   ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0).
 
     Returns:
         SimulationResult with executed trades and portfolio value series.

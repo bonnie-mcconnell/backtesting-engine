@@ -127,8 +127,6 @@ def walk_forward(
             # Sharpe = 0 (no return, no volatility), drawdown = 0, etc.
             # Excluding them from the summary overstates the strategy's
             # risk-adjusted performance on windows where it actually traded.
-            # We record them as valid windows with flat-cash portfolio values
-            # so the stitched equity curve and benchmark comparison are correct.
             flat_cash_metrics = _flat_cash_metrics()
             window_results.append(WindowResult(
                 train_start=data.index[window_start],
@@ -137,12 +135,26 @@ def walk_forward(
                 test_end=data.index[test_end - 1],
                 simulation_result=sim,
                 metrics_result=flat_cash_metrics,
-                skipped=False,  # cash-holding is a valid strategy state
+                skipped=False,
                 active_params=active_params,
                 formatted_params=formatted_params,
                 param_evolution_spec=param_evo_spec,
             ))
             flat_cash_windows += 1
+
+            # RC parity: flat-cash windows contribute p=1.0 to Fisher.
+            # They must also contribute to the RC candidate matrix - otherwise
+            # the two statistics test different hypotheses over different windows.
+            # Every candidate held cash this window → zero returns.
+            flat_candidates = strategy.candidate_test_returns(test_data, context_data)
+            if flat_candidates:
+                n_test = len(test_data) - 1  # returns are one shorter than prices
+                zero_candidates = {
+                    k: pd.Series(np.zeros(len(v)), index=v.index, dtype=float)
+                    for k, v in flat_candidates.items()
+                }
+                window_candidate_returns.append(zero_candidates)
+
             window_start += test_days
             continue
 

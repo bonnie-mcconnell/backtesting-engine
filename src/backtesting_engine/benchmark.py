@@ -35,6 +35,7 @@ Grinold, R. & Kahn, R. (2000). Active Portfolio Management (2nd ed.).
   Chapter 2 defines the information ratio and its relationship to alpha.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -61,33 +62,24 @@ class BenchmarkResult:
     Attributes
     ----------
     benchmark_sharpe : float
-        Mean per-window Sharpe for a buy-and-hold position, same data slices
-        as the strategy's walk-forward windows.
+        Mean per-window Sharpe for buy-and-hold, same data slices as the strategy.
     benchmark_sortino : float
         Mean per-window Sortino for buy-and-hold.
     benchmark_max_drawdown : float
-        Worst per-window drawdown for buy-and-hold. Not averaged - the worst
-        single-window drawdown is the relevant risk figure.
+        Worst per-window drawdown for buy-and-hold (not averaged).
     information_ratio : float
-        Annualised mean active return divided by annualised active return volatility.
-
-        Active return at bar t = strategy_return[t] - benchmark_return[t].
-        IR = mean(active_returns) / std(active_returns) * sqrt(252).
-
-        This is the Grinold & Kahn (2000) definition. IR > 0 means the strategy
-        generated positive risk-adjusted excess return over buy-and-hold.
-
-        Note: active returns are only defined on bars where BOTH the strategy
-        portfolio and the benchmark have a return. Bars where the strategy holds
-        no position contribute a zero active return (not a gap).
+        Annualised mean active return / annualised active return volatility.
+        IR > 0 means the strategy generated positive risk-adjusted excess return.
     sharpe_diff_t_stat : float
         Paired t-statistic for per-window Sharpe differences (strategy - benchmark).
-        Tests whether strategy Sharpe consistently differs from benchmark Sharpe
-        across walk-forward windows.
     sharpe_diff_p_value : float
         Two-sided p-value for the Sharpe difference t-test.
     strategy_beats_benchmark_fraction : float
         Fraction of walk-forward windows in which strategy Sharpe > benchmark Sharpe.
+    per_window_benchmark_sharpes : list[float]
+        Benchmark Sharpe ratio for each individual walk-forward window, in order.
+        Used by the dashboard to colour per-window bars against the correct
+        per-window benchmark (not the aggregate mean).
     """
     benchmark_sharpe: float
     benchmark_sortino: float
@@ -96,6 +88,7 @@ class BenchmarkResult:
     sharpe_diff_t_stat: float
     sharpe_diff_p_value: float
     strategy_beats_benchmark_fraction: float
+    per_window_benchmark_sharpes: list[float] = dataclasses.field(default_factory=list)
 
 
 def compute_benchmark(
@@ -107,24 +100,28 @@ def compute_benchmark(
     Compute buy-and-hold benchmark metrics over the same windows as a BacktestResult.
 
     The benchmark is a fully-invested long position opened at the start of each
-    test window and closed at the end, with the same transaction cost applied on
-    entry and exit.
+    test window and closed at the end, with the same transaction cost AND slippage
+    applied on entry and exit. Both frictions are included so the comparison is
+    genuinely apples-to-apples: the strategy pays cost + slippage on every fill;
+    the benchmark must pay the same on its single round-trip per window.
 
     Args:
         result: BacktestResult from walk_forward().
         data: The full price DataFrame used for the original walk_forward() call.
+              Must include 'high' and 'low' columns when slippage_factor > 0.
         execution: ExecutionConfig used for the strategy run. When provided,
-                   the benchmark applies the same transaction_cost_rate so the
-                   comparison is apples-to-apples. Defaults to the global
-                   TRANSACTION_COST_RATE constant for backward compatibility.
+                   the benchmark applies the same transaction_cost_rate and
+                   slippage_factor. Defaults to the global TRANSACTION_COST_RATE
+                   with zero slippage for backward compatibility.
 
     Returns:
         BenchmarkResult with per-window and aggregate comparison metrics.
 
     Raises:
-        ValueError: If result has no valid windows (all windows were flat-cash with zero total trades).
+        ValueError: If result has no valid windows.
     """
     cost_rate = execution.transaction_cost_rate if execution is not None else TRANSACTION_COST_RATE
+    slippage = execution.slippage_factor if execution is not None else 0.0
 
     valid = result.valid_windows
     if not valid:
@@ -137,19 +134,15 @@ def compute_benchmark(
     all_active_returns: list[np.ndarray] = []
 
     for window in valid:
-        window_data = data.loc[window.test_start:window.test_end, "close"]
-        bh_returns = _buy_and_hold_returns(window_data, cost_rate=cost_rate)
+        window_data = data.loc[window.test_start:window.test_end]
+        bh_returns = _buy_and_hold_returns(window_data, cost_rate=cost_rate, slippage_factor=slippage)
         benchmark_sharpes.append(_sharpe(bh_returns))
         benchmark_sortinos.append(_sortino(bh_returns))
         benchmark_drawdowns.append(_max_drawdown(bh_returns))
 
-        # Per-bar active returns: strategy_return[t] - bh_return[t].
-        # Strategy portfolio values give daily returns; align to bh_returns index.
         pv = window.simulation_result.portfolio_values
         if pv is not None and len(pv) > 1:
             strat_returns = pv.pct_change().dropna().to_numpy()
-            # bh_returns has length len(window_data)-1; strategy may differ
-            # if force-close adjusted the last bar. Use the shorter length.
             n = min(len(strat_returns), len(bh_returns))
             active = strat_returns[:n] - bh_returns[:n]
             all_active_returns.append(active)
@@ -158,8 +151,6 @@ def compute_benchmark(
     strat_sharpe_arr = np.array(strategy_sharpes)
     sharpe_diffs = strat_sharpe_arr - bm_sharpe_arr
 
-    # Information ratio: annualised mean active return / annualised active volatility.
-    # Computed from per-bar active returns concatenated across all windows.
     if all_active_returns:
         active_concat = np.concatenate(all_active_returns)
         active_std = float(np.std(active_concat, ddof=1))
@@ -170,9 +161,6 @@ def compute_benchmark(
     else:
         ir = float("nan")
 
-    # Paired t-test on per-window Sharpe differences.
-    # Tests whether the strategy consistently differs from buy-and-hold
-    # in risk-adjusted terms, not just on raw returns.
     if len(sharpe_diffs) >= 2:
         t_stat, p_val = stats.ttest_1samp(sharpe_diffs, popmean=0.0)
     else:
@@ -188,38 +176,57 @@ def compute_benchmark(
         sharpe_diff_t_stat=float(t_stat),
         sharpe_diff_p_value=float(p_val),
         strategy_beats_benchmark_fraction=beats_fraction,
+        per_window_benchmark_sharpes=benchmark_sharpes,
     )
 
 
 def _buy_and_hold_returns(
-    close: pd.Series,
+    window_data: "pd.DataFrame | pd.Series",
     cost_rate: float = TRANSACTION_COST_RATE,
+    slippage_factor: float = 0.0,
 ) -> np.ndarray:
     """
-    Daily returns for a buy-and-hold position over a price series.
+    Daily returns for a buy-and-hold position over one test window.
 
-    Applies cost_rate as a round-trip transaction cost at entry and exit.
-    The entry cost reduces the effective first-day return; the exit cost
-    reduces the last. All intermediate returns are unadjusted.
+    Applies cost_rate and slippage_factor on entry (day 0) and exit (last day)
+    to match the execution model used by the strategy. Slippage is modelled as
+    a fraction of the daily high-low range, identical to run_simulation_with_execution.
 
     Args:
-        close: Closing price series for one test window.
-        cost_rate: Transaction cost rate per side. Should match the rate used
-                   by the strategy being benchmarked (pass from ExecutionConfig).
+        window_data: Either a pd.DataFrame with a 'close' column (and optionally
+                     'high'/'low' for slippage), or a plain pd.Series of closing
+                     prices (backward-compatible; slippage is zero when H/L absent).
+        cost_rate: Transaction cost rate per side.
+        slippage_factor: Fraction of daily H-L range added to entry fill and
+                         subtracted from exit fill. Requires 'high'/'low' columns
+                         when window_data is a DataFrame; ignored otherwise.
 
     Returns:
-        Array of daily returns, same length as len(close) - 1.
+        Array of daily returns, length len(window_data) - 1.
     """
-    prices = close.to_numpy(dtype=float)
-    if len(prices) < 2:
+    # Accept both a plain close Series (old API) and an OHLCV DataFrame (new API).
+    if isinstance(window_data, pd.Series):
+        close = window_data.to_numpy(dtype=float)
+        high = close
+        low = close
+    else:
+        close = window_data["close"].to_numpy(dtype=float)
+        high = window_data["high"].to_numpy(dtype=float) if "high" in window_data.columns else close
+        low = window_data["low"].to_numpy(dtype=float) if "low" in window_data.columns else close
+
+    if len(close) < 2:
         return np.array([], dtype=float)
 
-    returns: np.ndarray = np.diff(prices) / prices[:-1]
+    returns: np.ndarray = np.diff(close) / close[:-1]
 
-    # Entry cost on day 0: deduct from first day's return.
-    # Exit cost on last day: deduct from last day's return.
-    # This mirrors how run_simulation applies costs.
-    returns[0] -= cost_rate
-    returns[-1] -= cost_rate
+    # Entry cost + slippage drag on day 0.
+    entry_range = high[0] - low[0]
+    entry_slip = slippage_factor * entry_range / max(close[0], 1e-10)
+    returns[0] -= cost_rate + entry_slip
+
+    # Exit cost + slippage drag on last day.
+    exit_range = high[-1] - low[-1]
+    exit_slip = slippage_factor * exit_range / max(close[-1], 1e-10)
+    returns[-1] -= cost_rate + exit_slip
 
     return returns

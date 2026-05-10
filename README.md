@@ -22,7 +22,7 @@ The Kalman filter was the hardest part to get right. Fitting it by maximum likel
 ## Quickstart
 
 ```bash
-git clone https://github.com/you/backtesting-engine
+git clone https://github.com/bonnie-mcconnell/backtesting-engine
 cd backtesting-engine
 poetry install
 make run
@@ -111,7 +111,7 @@ Adding a new strategy means implementing this interface. The walk-forward runner
 
 **Cost-inclusive position sizing.** `position_value = cash × fraction / (1 + cost_rate)` so that `position_value + buy_cost = cash × fraction` exactly. The intuitive formula (`position_value = cash × fraction`, then subtract cost) creates a small negative cash balance after every trade.
 
-**Benchmark cost parity.** The buy-and-hold benchmark applies the same `transaction_cost_rate` from `ExecutionConfig` as the strategy. Using a global default constant for the benchmark but a custom rate for the strategy makes the comparison non-apples-to-apples in cost sensitivity sweeps.
+**Benchmark cost and slippage parity.** The buy-and-hold benchmark applies the same `transaction_cost_rate` and `slippage_factor` from `ExecutionConfig` as the strategy. The strategy pays both frictions on every fill; the benchmark pays them on its one round-trip entry and exit per window. This makes the comparison genuinely apples-to-apples across cost sensitivity sweeps.
 
 ---
 
@@ -137,7 +137,8 @@ backtesting-engine [options]
 --strategy {ma,kalman,momentum,all}   Strategy to run (default: all)
 --ticker SYMBOL                        Ticker symbol (default: SPY)
 --start YYYY-MM-DD                     Start date (default: 1993-01-29)
---end YYYY-MM-DD                       End date (default: today)
+--end YYYY-MM-DD                       End date, inclusive (default: today).
+                                       --end 2024-12-31 includes December 31.
                                        Set this for reproducible results.
 --cost RATE                            Transaction cost per side (default: 0.001)
 --slippage FACTOR                      Fraction of daily range (default: 0.05)
@@ -160,7 +161,7 @@ make test     # full suite
 make check    # lint + typecheck + tests
 ```
 
-Test coverage includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, momentum RC candidate independence (each candidate uses its own lookback, not the fitted winner), flat-cash window handling, benchmark cost parity, walk-forward window mechanics, and Reality Check implementation.
+Test coverage (367 tests) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, and Windows UTF-8 portability.
 
 ---
 
@@ -178,11 +179,13 @@ Full discussion in [docs/methodology.md](docs/methodology.md).
 
 ## What I would do next
 
-The biggest gap is benchmark-relative Reality Check: resample active returns (strategy minus buy-and-hold) rather than raw returns. That would directly test the claim that matters - the strategy adds value over passive - rather than the weaker claim that it beats cash.
+The biggest gap is benchmark-relative Reality Check: resample active returns (strategy minus buy-and-hold) rather than raw returns. That directly tests whether the strategy adds value over passive - a stronger claim than beating cash.
 
 The second gap is cross-asset validation. Running the same framework over a basket of ETFs (SPY, QQQ, EEM, EFA, TLT, GLD) would test whether the null result is specific to SPY or robust across asset classes.
 
 The Kalman filter MLE is slow because it re-runs the full filter on every optimiser call. The EM algorithm would be faster and has a natural stopping criterion.
+
+Optimal block length selection: the current block length is fixed at √n, which is a common heuristic. Politis and White (2004) provide a data-driven method using spectral density estimation that adapts to each return series' autocorrelation structure.
 
 ---
 
@@ -192,6 +195,7 @@ The Kalman filter MLE is slow because it re-runs the full filter on every optimi
 - Grinold, R. & Kahn, R. (2000). *Active Portfolio Management*, 2nd ed. Chapter 2.
 - Politis, D.N. & Romano, J.P. (1994). The Stationary Bootstrap. *JASA*, 89(428), 1303–1313.
 - Welch, G. & Bishop, G. (1995). An Introduction to the Kalman Filter. UNC TR 95-041.
+- Politis, D.N. & White, H. (2004). Automatic Block-Length Selection for the Dependent Bootstrap. *Econometric Reviews*, 23(1), 53–70.
 
 ---
 

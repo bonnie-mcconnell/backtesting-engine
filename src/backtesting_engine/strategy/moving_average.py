@@ -225,12 +225,18 @@ class MovingAverageStrategy(BaseStrategy):
         test-period performance of the full candidate universe, not
         training-period performance of the winner.
 
+        Boundary carry-over is applied identically to generate_signals_with_context:
+        if a candidate would be long at the context/test boundary, a buy signal
+        is injected at test bar 0. Without this, the RC candidates and the selected
+        strategy are evaluated under different state assumptions - the selected
+        strategy carries its position forward but candidate returns start flat.
+
         Args:
             test_data: Out-of-sample test period.
             context_data: Optional warmup tail from training window.
 
         Returns:
-            Dict mapping (short, long) → pd.Series of daily returns
+            Dict mapping (short, long) -> pd.Series of daily returns
             on test_data. Only candidates evaluated during fit() are included.
         """
         results: dict[tuple[int, int], pd.Series] = {}
@@ -240,16 +246,31 @@ class MovingAverageStrategy(BaseStrategy):
             if context_data is not None:
                 combined = pd.concat([context_data, test_data])
                 all_sig = self._compute_signals(combined, short, long)
-                signals = all_sig.loc[test_data.index]
+                signals = all_sig.loc[test_data.index].copy()
+
+                # Apply the same boundary carry-over logic as
+                # generate_signals_with_context so RC candidates and the
+                # selected strategy are evaluated under identical state.
+                c = combined["close"]
+                short_ma = c.rolling(short).mean()
+                long_ma = c.rolling(long).mean()
+                last_ctx_idx = context_data.index[-1]
+                if (
+                    last_ctx_idx in short_ma.index
+                    and not pd.isna(short_ma.loc[last_ctx_idx])
+                    and not pd.isna(long_ma.loc[last_ctx_idx])
+                    and short_ma.loc[last_ctx_idx] > long_ma.loc[last_ctx_idx]
+                    and signals.iloc[0] == 0
+                ):
+                    signals.iloc[0] = 1
             else:
                 signals = self._compute_signals(test_data, short, long)
 
             raw_returns = returns_from_signals(close, signals.to_numpy())
 
-            # Align to test_data index (raw_returns has length len(close)-1)
             returns_series = pd.Series(
                 raw_returns,
-                index=test_data.index[1:],  # one shorter due to differencing
+                index=test_data.index[1:],
                 dtype=float,
             )
             results[(short, long)] = returns_series

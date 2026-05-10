@@ -171,12 +171,18 @@ def _download_and_clean(
     raw.columns = raw.columns.get_level_values(0)
 
     available = set(raw.columns)
-    required = {"Adj Close", "High", "Low"}
+    # "Close" (unadjusted) is required alongside "Adj Close" to compute the
+    # adjustment factor. Without it we cannot build adjusted high/low, and
+    # using unadjusted high/low with an adjusted close produces a close that
+    # sits outside [low, high] on ex-dividend dates, breaking the slippage model.
+    required = {"Adj Close", "Close", "High", "Low"}
     missing = required - available
     if missing:
         raise ValueError(
             f"yfinance response missing expected columns: {missing}. "
-            f"Available: {sorted(available)}."
+            f"Available: {sorted(available)}. "
+            "All four columns are required: 'Adj Close' and 'Close' to compute "
+            "the dividend/split adjustment factor, 'High' and 'Low' for slippage fills."
         )
 
     data = raw[["Adj Close", "High", "Low"]].rename(columns={
@@ -185,10 +191,11 @@ def _download_and_clean(
         "Low": "low",
     })
 
-    if "Close" in available:
-        adjustment = raw["Adj Close"] / raw["Close"]
-        data["high"] = raw["High"] * adjustment
-        data["low"] = raw["Low"] * adjustment
+    # Compute adjustment factor from Adj Close / Close.
+    # Both columns are now guaranteed present by the check above.
+    adjustment = raw["Adj Close"] / raw["Close"]
+    data["high"] = raw["High"] * adjustment
+    data["low"] = raw["Low"] * adjustment
 
     if "Volume" in available:
         data["volume"] = raw["Volume"]

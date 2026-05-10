@@ -183,28 +183,43 @@ class MomentumStrategy(BaseStrategy):
         grid search universe. Used by walk_forward to build the
         Reality Check candidate matrix.
 
+        Boundary carry-over is applied identically to generate_signals_with_context:
+        if a candidate's momentum is positive at the context/test boundary, a buy
+        signal is injected at test bar 0. Without this, the RC candidates and the
+        selected strategy are evaluated under different state assumptions.
+
         Args:
             test_data: Out-of-sample test period.
             context_data: Optional warmup tail from training window.
 
         Returns:
-            Dict mapping lookback → pd.Series of daily returns on test_data.
+            Dict mapping lookback -> pd.Series of daily returns on test_data.
         """
         results: dict[int, pd.Series] = {}
 
         for lb in self._all_lookbacks_:
             close_test = test_data["close"].to_numpy(dtype=float)
             if context_data is not None:
-                # Use _momentum_signals(lb) directly - NOT self.generate_signals(),
-                # which would apply self.lookback_ (the fitted winner) to every
-                # candidate, making all columns of the RC matrix identical.
-                # Each candidate must be evaluated with its own lookback.
                 combined_close = np.concatenate([
                     context_data["close"].to_numpy(dtype=float),
                     close_test,
                 ])
                 all_signals_raw = _momentum_signals(combined_close, lb)
-                signals = all_signals_raw[len(context_data):]
+                signals = all_signals_raw[len(context_data):].copy()
+
+                # Apply the same boundary carry-over logic as
+                # generate_signals_with_context so RC candidates and the
+                # selected strategy are evaluated under identical state.
+                n_context = len(context_data)
+                if n_context >= lb:
+                    last_context_pos = n_context - 1
+                    if last_context_pos >= lb:
+                        log_close = np.log(np.maximum(combined_close, 1e-10))
+                        momentum_at_boundary = (
+                            log_close[last_context_pos] - log_close[last_context_pos - lb]
+                        )
+                        if momentum_at_boundary > 0 and signals[0] == 0:
+                            signals[0] = 1
             else:
                 signals = _momentum_signals(close_test, lb)
 

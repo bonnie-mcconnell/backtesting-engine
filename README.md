@@ -52,7 +52,8 @@ backtesting-engine \
 
 The table below intentionally does not hardcode numbers. Hardcoded numbers become stale within weeks as data revisions accumulate, and a mismatch between the README and actual output is a credibility problem. Run the command and the dashboards will show every metric with full context.
 
-See [docs/reproducibility.md](docs/reproducibility.md) for environment details.
+See [docs/reproducibility.md](docs/reproducibility.md) for environment details and
+[docs/performance.md](docs/performance.md) for expected runtimes.
 
 ---
 
@@ -161,7 +162,7 @@ make test     # full suite
 make check    # lint + typecheck + tests
 ```
 
-Test coverage (367 tests) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, and Windows UTF-8 portability.
+Test coverage (396 tests) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, yfinance retry handling, and Windows UTF-8 portability.
 
 ---
 

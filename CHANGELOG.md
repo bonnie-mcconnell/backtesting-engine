@@ -1,5 +1,83 @@
 # Changelog
 
+## [0.7.0] - 2026-05-11
+
+### Fixed - Crash bugs
+
+- **`_fmt_metric` crash in comparative summary** (`main.py`).
+  `best3()` passed `"∞"` as a Python format specifier, causing
+  `ValueError: Unknown format code` on every `--strategy all` / `make run`.
+  Fixed: infinite values now render via an explicit `isinf` branch.
+
+- **Windows encoding crash in tests** (`tests/`).
+  `Path.read_text()` without `encoding=` defaults to cp1252 on Windows,
+  crashing on Unicode symbols in source files. All source-file reads in
+  tests now explicitly pass `encoding="utf-8"`.
+
+### Fixed - Statistical correctness
+
+- **Reality Check excluded flat-cash windows; Fisher did not** (`walk_forward.py`).
+  Flat-cash windows contributed `p=1.0` to Fisher but were silently excluded from
+  the RC candidate matrix. The two statistics were testing different hypotheses
+  over different sets of windows. Fixed: flat-cash windows now contribute
+  zero-return arrays to the RC matrix, giving both statistics identical coverage.
+
+- **RC boundary carry-over missing from candidate returns** (`moving_average.py`, `momentum.py`).
+  `generate_signals_with_context()` injected a buy at test bar 0 when the
+  selected strategy was long at the train/test boundary; `candidate_test_returns()`
+  did not. The RC candidate universe and the selected strategy were evaluated under
+  different state assumptions. Fixed: both methods now apply identical boundary injection.
+
+- **Benchmark slippage omission** (`benchmark.py`).
+  `_buy_and_hold_returns()` applied transaction costs but not slippage.
+  The strategy paid both frictions on every fill; buy-and-hold did not.
+  Fixed: `_buy_and_hold_returns()` now accepts and applies `slippage_factor`.
+  `compute_benchmark()` forwards it from `ExecutionConfig`.
+
+- **Dashboard BH curve inconsistent with `benchmark.py`** (`dashboard.py`).
+  `_add_cumulative_benchmark()` was called without `price_data` in the
+  parameter-evolution panel fallback path, producing a BH curve that differed
+  from `benchmark.py`. Fixed: `price_data` now threads through
+  `_add_param_evolution()` to all fallback calls.
+
+- **Per-window Sharpe bars coloured against aggregate benchmark Sharpe** (`dashboard.py`).
+  Each bar was coloured green/red based on whether it beat the mean BH Sharpe
+  across all windows, not the BH Sharpe for that specific window.
+  Fixed: `BenchmarkResult` now carries `per_window_benchmark_sharpes: list[float]`.
+
+### Fixed - CLI and data
+
+- **`--end` date was exclusive** (`main.py`).
+  `yf.download(end=date)` treats end as exclusive. Fixed: `_load()` adds one
+  calendar day internally, making `--end 2024-12-31` truly inclusive.
+
+- **`_MIN_ROWS` ignored `--train-years`/`--test-years`** (`main.py`).
+  Module-level constant replaced with `_min_rows(train_years, test_years)` computed
+  at runtime from actual CLI arguments.
+
+- **`ingestion.py` did not require `"Close"` column** (`data/ingestion.py`).
+  Without `"Close"`, the adjustment factor `Adj Close / Close` cannot be computed.
+  Fixed: `"Close"` is now required; absence raises `ValueError` with a clear message.
+
+- **yfinance download had no retry logic** (`data/ingestion.py`).
+  A transient network failure raised a confusing `ValueError("No data returned")`.
+  Fixed: up to 3 attempts with exponential back-off (1 s, 2 s). Exceptions and
+  empty responses are both retried.
+
+### Fixed - Documentation
+
+- Execution docstring corrected: defaults are 0.1% cost, 5% slippage, 1-bar delay.
+- README placeholder git clone URL corrected to the real repository URL.
+
+### Added
+
+- `BenchmarkResult.per_window_benchmark_sharpes: list[float]` - per-window BH
+  Sharpe ratios for accurate dashboard bar colouring.
+- `tests/test_fixes.py` - 26 new tests covering all v0.7.0 correctness fixes.
+- `tests/test_integration.py` - end-to-end coverage for walk-forward, benchmark,
+  and dashboard wiring on synthetic data.
+- `docs/performance.md` - runtime expectations and profiling notes.
+
 ## [0.6.2] - 2026-05-06
 
 ### Fixed
@@ -135,40 +213,6 @@
 - `## What I'd build next`: added clarifying sentence that `cost_sensitivity_sweep`
   already parallelises over (cost, slippage) pairs; the future work is parallelising
   the inner walk-forward window loop specifically.
-
-## [0.5.0] - 2026-04-24
-
-### Added
-- `strategy/momentum.py`: `MomentumStrategy` - time-series momentum with calibrated
-  lookback. Grid-searches T ∈ {20, 40, 60, 90, 120, 180, 250} trading days per training
-  window. Implements `candidate_test_returns()` so White's Reality Check covers the
-  full search universe. Signal: buy when T-day log-return crosses positive, sell when
-  it crosses negative. Documented against Moskowitz, Ooi & Pedersen (2012).
-- `execution.py`: `cost_sensitivity_sweep()` now accepts `n_workers` parameter.
-  `n_workers > 1` runs each (cost, slippage) pair concurrently via
-  `ProcessPoolExecutor`. Each combination is fully independent so this is
-  embarrassingly parallel. Pass `n_workers=-1` to use all available CPUs.
-  On an 8-core machine a 5×5 grid reduces from ~12 minutes to ~2 minutes.
-- `data/ingestion.py`: Local Parquet caching in `~/.cache/backtesting-engine/`.
-  First call downloads from yfinance and writes cache. Subsequent calls within
-  24 hours read from cache. `use_cache=False` forces a fresh download.
-  Cache is keyed by (ticker, start_date). Corrupt cache files are ignored.
-- `dashboard.py`: `build_dashboard()` now accepts optional `benchmark: BenchmarkResult`.
-  When provided: (1) information ratio and beats-benchmark fraction appear in the
-  dashboard title, (2) a buy-and-hold reference line is added to the per-window
-  Sharpe bars panel with IR and beats-% annotation, (3) bars are coloured green
-  when the strategy beats the benchmark, red when it does not.
-- `tests/test_momentum.py`: 30 tests covering signal logic, fit(), warmup context,
-  candidate_test_returns(), and active_params().
-
-### Changed
-- `main.py`: Added Strategy 3 (time-series momentum). `_print_comparison()` updated
-  to show all three strategies side by side with ✓ marking the best value per metric.
-  Cost sensitivity sweep and heatmap extended to include momentum. `build_dashboard()`
-  calls now pass `benchmark` argument.
-- `CONTRIBUTING.md`: Updated project scope section.
-- `README.md`: Removed fabricated sample output. Added momentum strategy, caching,
-  and parallelism documentation. Accurate test count (204).
 
 ## [0.5.3] - 2026-04-22
 
@@ -319,6 +363,40 @@
 - `tests/test_metrics.py`: Updated Sortino tests to match corrected formula. Added
   `test_consistent_small_losses_not_inflated` and `test_downside_deviation_not_std`
   which specifically catch the regression.
+
+## [0.5.0] - 2026-04-20
+
+### Added
+- `strategy/momentum.py`: `MomentumStrategy` - time-series momentum with calibrated
+  lookback. Grid-searches T ∈ {20, 40, 60, 90, 120, 180, 250} trading days per training
+  window. Implements `candidate_test_returns()` so White's Reality Check covers the
+  full search universe. Signal: buy when T-day log-return crosses positive, sell when
+  it crosses negative. Documented against Moskowitz, Ooi & Pedersen (2012).
+- `execution.py`: `cost_sensitivity_sweep()` now accepts `n_workers` parameter.
+  `n_workers > 1` runs each (cost, slippage) pair concurrently via
+  `ProcessPoolExecutor`. Each combination is fully independent so this is
+  embarrassingly parallel. Pass `n_workers=-1` to use all available CPUs.
+  On an 8-core machine a 5×5 grid reduces from ~12 minutes to ~2 minutes.
+- `data/ingestion.py`: Local Parquet caching in `~/.cache/backtesting-engine/`.
+  First call downloads from yfinance and writes cache. Subsequent calls within
+  24 hours read from cache. `use_cache=False` forces a fresh download.
+  Cache is keyed by (ticker, start_date). Corrupt cache files are ignored.
+- `dashboard.py`: `build_dashboard()` now accepts optional `benchmark: BenchmarkResult`.
+  When provided: (1) information ratio and beats-benchmark fraction appear in the
+  dashboard title, (2) a buy-and-hold reference line is added to the per-window
+  Sharpe bars panel with IR and beats-% annotation, (3) bars are coloured green
+  when the strategy beats the benchmark, red when it does not.
+- `tests/test_momentum.py`: 30 tests covering signal logic, fit(), warmup context,
+  candidate_test_returns(), and active_params().
+
+### Changed
+- `main.py`: Added Strategy 3 (time-series momentum). `_print_comparison()` updated
+  to show all three strategies side by side with ✓ marking the best value per metric.
+  Cost sensitivity sweep and heatmap extended to include momentum. `build_dashboard()`
+  calls now pass `benchmark` argument.
+- `CONTRIBUTING.md`: Updated project scope section.
+- `README.md`: Removed fabricated sample output. Added momentum strategy, caching,
+  and parallelism documentation. Accurate test count (204).
 
 ## [0.4.0] - 2026-04-19
 

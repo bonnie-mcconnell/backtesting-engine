@@ -148,7 +148,6 @@ def walk_forward(
             # Every candidate held cash this window → zero returns.
             flat_candidates = strategy.candidate_test_returns(test_data, context_data)
             if flat_candidates:
-                n_test = len(test_data) - 1  # returns are one shorter than prices
                 zero_candidates = {
                     k: pd.Series(np.zeros(len(v)), index=v.index, dtype=float)
                     for k, v in flat_candidates.items()

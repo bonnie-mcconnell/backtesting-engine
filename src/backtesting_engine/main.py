@@ -51,6 +51,7 @@ from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
+
 def _min_rows(train_years: int, test_years: int) -> int:
     """Minimum rows needed for at least one walk-forward window with the given window sizes."""
     return (train_years + test_years) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS

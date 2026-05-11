@@ -560,7 +560,7 @@ def _add_param_evolution(
     result: BacktestResult,
     row: int,
     col: int,
-    price_data: "pd.Series | None" = None,
+    price_data: pd.Series | None = None,
 ) -> None:
     """
     Panel 6a: Parameter evolution across walk-forward windows.

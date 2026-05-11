@@ -151,7 +151,9 @@ def build_dashboard(
 
     # Panel 6: Parameter evolution (full width, row 4)
     if has_param_evolution:
-        _add_param_evolution(fig, result, row=4, col=1)
+        # Forward price_data so that if param evolution falls back to the cumulative
+        # benchmark panel, both panels use the same price source.
+        _add_param_evolution(fig, result, row=4, col=1, price_data=price_data)
     else:
         # Pass price_data so the cumulative BH curve here is built from
         # actual price changes - the same source used by panel 1 and benchmark.py.
@@ -554,7 +556,11 @@ def _add_return_distribution(
 
 
 def _add_param_evolution(
-    fig: go.Figure, result: BacktestResult, row: int, col: int
+    fig: go.Figure,
+    result: BacktestResult,
+    row: int,
+    col: int,
+    price_data: "pd.Series | None" = None,
 ) -> None:
     """
     Panel 6a: Parameter evolution across walk-forward windows.
@@ -564,20 +570,24 @@ def _add_param_evolution(
     strategy.param_evolution_spec(). This eliminates all isinstance checks and
     hard-coded parameter key names from the dashboard code.
 
-    For MovingAverageStrategy: shows short_window and long_window drift.
-    For KalmanFilterStrategy:  shows signal-to-noise ratio and log-likelihood.
-    For MomentumStrategy:      shows fitted lookback period.
-    For new strategies:        automatically uses whatever param_evolution_spec() returns.
+    When the strategy has no parameter evolution to show, falls back to the
+    cumulative benchmark panel. price_data is forwarded to that fallback so the
+    BH curve is built from actual prices, consistent with panel 1 and benchmark.py.
+    Without this, the two panels showed different BH curves for the same run.
+
+    Args:
+        price_data: Full closing price series. Forwarded to the cumulative
+                    benchmark fallback so it uses real prices, not stitched returns.
     """
     valid = result.valid_windows
     if not valid or not valid[0].active_params:
-        _add_cumulative_benchmark(fig, result, row, col)
+        _add_cumulative_benchmark(fig, result, row, col, price_data=price_data)
         return
 
     # Get spec from first window - all windows for the same strategy share the same spec.
     spec = valid[0].param_evolution_spec
     if not spec:
-        _add_cumulative_benchmark(fig, result, row, col)
+        _add_cumulative_benchmark(fig, result, row, col, price_data=price_data)
         return
 
     test_dates = [w.test_start for w in valid]

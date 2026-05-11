@@ -147,18 +147,63 @@ def _save_to_cache(
         )
 
 
+# Maximum number of download attempts before raising.
+# Three attempts with exponential back-off (1s, 2s) handle transient network
+# glitches without hanging a long run. More retries are rarely warranted for
+# yfinance: if the server is down, waiting longer won't help.
+_MAX_DOWNLOAD_RETRIES: int = 3
+
+
 def _download_and_clean(
     ticker: str, start_date: str, end_date: str | None = None
 ) -> pd.DataFrame:
-    """Download from yfinance and apply all cleaning steps."""
+    """Download from yfinance (with retry) and apply all cleaning steps.
+
+    Retries up to _MAX_DOWNLOAD_RETRIES times on empty responses or network
+    errors, with exponential back-off (1 s, 2 s, ...). A transient yfinance
+    timeout or rate-limit returns an empty DataFrame, which we treat as a
+    retriable condition rather than an immediate hard failure.
+    """
+    import time
+
     end_ts = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp.now()
-    raw = yf.download(
-        ticker,
-        start=start_date,
-        end=end_ts,
-        auto_adjust=False,
-        progress=False,
-    )
+    last_exc: Exception | None = None
+
+    for attempt in range(_MAX_DOWNLOAD_RETRIES):
+        if attempt > 0:
+            wait = 2 ** (attempt - 1)   # 1 s, 2 s
+            time.sleep(wait)
+
+        try:
+            raw = yf.download(
+                ticker,
+                start=start_date,
+                end=end_ts,
+                auto_adjust=False,
+                progress=False,
+            )
+        except Exception as exc:
+            # yfinance raises various exceptions (ConnectionError, JSONDecodeError,
+            # etc.) on transient failures. Retry up to the limit, then re-raise
+            # with a clear message so the caller knows which attempt failed.
+            last_exc = exc
+            continue
+
+        if raw is not None and not raw.empty:
+            break   # success
+    else:
+        # All attempts returned empty or raised.
+        if last_exc is not None:
+            raise ValueError(
+                f"Failed to download data for '{ticker}' after {_MAX_DOWNLOAD_RETRIES} "
+                f"attempts. Last error: {type(last_exc).__name__}: {last_exc}. "
+                "Check your network connection and that the ticker is valid."
+            ) from last_exc
+        raise ValueError(
+            f"No data returned for ticker '{ticker}' between {start_date} and "
+            f"{end_ts.date()} after {_MAX_DOWNLOAD_RETRIES} attempts. "
+            "Check that the ticker is valid and the date range has trading activity."
+        )
 
     if raw is None or raw.empty:
         raise ValueError(

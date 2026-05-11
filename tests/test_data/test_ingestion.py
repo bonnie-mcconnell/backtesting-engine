@@ -110,6 +110,47 @@ def test_load_data_raises_on_empty_response() -> None:
             load_data("INVALID", "2020-01-01", use_cache=False)
 
 
+def test_load_data_retries_empty_response_then_succeeds() -> None:
+    download = [pd.DataFrame(), _fake_download()]
+    with (
+        patch("backtesting_engine.data.ingestion.yf.download", side_effect=download) as mock_download,
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = load_data("SPY", "2020-01-01", use_cache=False)
+
+    assert len(result) == 5
+    assert mock_download.call_count == 2
+    mock_sleep.assert_called_once_with(1)
+
+
+def test_load_data_retries_exception_then_succeeds() -> None:
+    download = [ConnectionError("temporary yfinance failure"), _fake_download()]
+    with (
+        patch("backtesting_engine.data.ingestion.yf.download", side_effect=download) as mock_download,
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = load_data("SPY", "2020-01-01", use_cache=False)
+
+    assert len(result) == 5
+    assert mock_download.call_count == 2
+    mock_sleep.assert_called_once_with(1)
+
+
+def test_load_data_reports_last_retry_exception() -> None:
+    with (
+        patch(
+            "backtesting_engine.data.ingestion.yf.download",
+            side_effect=ConnectionError("temporary yfinance failure"),
+        ) as mock_download,
+        patch("time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(ValueError, match="after 3 attempts"):
+            load_data("SPY", "2020-01-01", use_cache=False)
+
+    assert mock_download.call_count == 3
+    assert mock_sleep.call_count == 2
+
+
 def test_load_data_output_passes_validation() -> None:
     from backtesting_engine.data.validator import validate_data
 

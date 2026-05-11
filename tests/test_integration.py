@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
+from backtesting_engine.config import ANNUALISATION_FACTOR, INITIAL_PORTFOLIO_VALUE
 from backtesting_engine.dashboard import build_dashboard
 from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult
@@ -23,6 +24,7 @@ from backtesting_engine.walk_forward import walk_forward
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
+
 
 def _make_trending_data(n: int = 756, seed: int = 0) -> pd.DataFrame:
     """
@@ -59,6 +61,7 @@ def _zero_friction() -> ExecutionConfig:
 # ---------------------------------------------------------------------------
 # Full pipeline: walk_forward → benchmark → dashboard
 # ---------------------------------------------------------------------------
+
 
 class TestFullPipelineMA:
     """Moving Average strategy: full pipeline integration."""
@@ -252,6 +255,7 @@ class TestFullPipelineMomentum:
 # Cross-component consistency
 # ---------------------------------------------------------------------------
 
+
 class TestCrossComponentConsistency:
     """Verify that outputs from one component are consistent with inputs to another."""
 
@@ -292,7 +296,6 @@ class TestCrossComponentConsistency:
 
     def test_portfolio_values_start_near_initial_capital(self) -> None:
         """First portfolio value must equal INITIAL_PORTFOLIO_VALUE (no trades yet)."""
-        from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
         result, _, _ = self._run()
         for w in result.valid_windows:
             pv = w.simulation_result.portfolio_values
@@ -305,7 +308,6 @@ class TestCrossComponentConsistency:
     def test_trade_pnl_consistent_with_portfolio(self) -> None:
         """Total P&L across trades must approximately equal final-minus-initial portfolio value."""
         result, _, _ = self._run()
-        from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
         for w in result.valid_windows:
             trades = w.simulation_result.trades
             pv = w.simulation_result.portfolio_values
@@ -362,12 +364,12 @@ class TestCrossComponentConsistency:
 # Edge cases that span multiple components
 # ---------------------------------------------------------------------------
 
+
 class TestPipelineEdgeCases:
     """Edge cases that only surface through the full pipeline."""
 
     def test_single_window_pipeline_completes(self) -> None:
         """Minimum viable dataset: exactly one train + one test window."""
-        from backtesting_engine.config import ANNUALISATION_FACTOR
         # 2 years of data → exactly one 1-year train + 1-year test window
         n = 2 * ANNUALISATION_FACTOR + 10
         dates = pd.date_range("2020-01-01", periods=n, freq="B")

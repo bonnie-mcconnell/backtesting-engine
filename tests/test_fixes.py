@@ -19,8 +19,6 @@ import pathlib
 
 import numpy as np
 import pandas as pd
-import pytest
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -138,7 +136,9 @@ class TestEndDateInclusive:
         # The logic in _load: yf_end = None when end_date is None.
         # We test the main module compiles and the logic is correct by inspection.
         import inspect
+
         import backtesting_engine.main as m
+
         src = inspect.getsource(m._load)
         # Must only apply the timedelta when end_date is not None.
         assert "if end_date is not None" in src
@@ -266,17 +266,11 @@ class TestRCBoundaryCarryOver:
         candidates = strategy.candidate_test_returns(test, context)
         selected_key = (strategy.short_window_, strategy.long_window_)
 
-        if selected_key in candidates:
-            cand_returns = candidates[selected_key]
-            # Selected strategy returns (from gswc) should align with candidate returns
-            pv = test["close"].to_numpy()
-            gswc_pos = (gswc_signals == 1).astype(int).values
-            # First signal value determines whether boundary carry-over was applied.
-            # If gswc injects a buy at bar 0, candidate should too.
-            cand_signals_implied = candidates[selected_key]
-            assert len(cand_signals_implied) == len(test) - 1, (
-                "Candidate return series length must be len(test) - 1"
-            )
+        assert selected_key in candidates
+        assert len(gswc_signals) == len(test)
+        assert len(candidates[selected_key]) == len(test) - 1, (
+            "Candidate return series length must be len(test) - 1"
+        )
 
     def test_momentum_candidate_returns_inject_boundary(self) -> None:
         """Momentum candidate_test_returns must apply boundary carry-over."""

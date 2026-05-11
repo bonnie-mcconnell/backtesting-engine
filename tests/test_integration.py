@@ -11,7 +11,10 @@ import pandas as pd
 import pytest
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
-from backtesting_engine.config import ANNUALISATION_FACTOR, INITIAL_PORTFOLIO_VALUE
+from backtesting_engine.config import (
+    ANNUALISATION_FACTOR,
+    INITIAL_PORTFOLIO_VALUE,
+)
 from backtesting_engine.dashboard import build_dashboard
 from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult
@@ -19,7 +22,6 @@ from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
 from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

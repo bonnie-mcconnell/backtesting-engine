@@ -1,8 +1,6 @@
 """
 backtesting-engine - Walk-forward validated backtesting with statistical rigour.
 
-Public API
-----------
 The three things most users need:
 
     from backtesting_engine import walk_forward, MovingAverageStrategy, KalmanFilterStrategy

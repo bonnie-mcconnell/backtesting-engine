@@ -1,78 +1,41 @@
 """
 Kalman filter trend-following strategy with MLE parameter calibration.
 
-Model
------
-We treat the log-price as the sum of a latent trend component and observation
-noise. The trend itself evolves as a random walk:
+We treat log-price as the sum of a latent trend and observation noise.
+The trend evolves as a random walk:
 
     trend[t] = trend[t-1] + w[t],    w[t] ~ N(0, Q)   (process noise)
     log_price[t] = trend[t] + v[t],  v[t] ~ N(0, R)   (observation noise)
 
-This is a local-level model (also called the random walk plus noise model).
-It is the simplest nontrivial state-space model and has a closed-form
-Kalman filter recursion - no approximations required.
+This is a local-level model with a closed-form Kalman filter recursion.
+Q is the process noise variance (how fast the latent trend can change);
+R is the observation noise variance (how much price movement is considered
+noise). The ratio Q/R determines filter behaviour: high Q/R means the
+filter tracks price closely; low Q/R means it smooths aggressively.
 
-The two parameters are:
-  Q  process noise variance: how fast the latent trend is allowed to change.
-     Large Q → the filter reacts quickly to price moves (noisy signals).
-     Small Q → the filter reacts slowly, smoothing over fluctuations.
-  R  observation noise variance: how much of the price move is considered
-     noise around a stable trend.
-     Large R → the filter trusts the model over the data (slow adaptation).
-     Small R → the filter trusts the data over the model (fast adaptation).
+Q and R are chosen on each training window by maximising the log-likelihood
+of the one-step-ahead prediction errors (innovations). The optimisation runs
+over log(Q) and log(R): enforces positivity and keeps Nelder-Mead in a
+symmetric search space since Q and R can span many orders of magnitude.
+Nelder-Mead is used rather than a gradient method because the likelihood
+surface has curvature discontinuities at the boundary Q→0.
 
-The ratio Q/R is what actually determines filter behaviour. We call it the
-signal-to-noise ratio (SNR). SNR = 0 → no trend detected. SNR → ∞ → the
-filtered trend tracks price exactly.
+After running the filter forward through test data using training-calibrated
+Q and R, the signal is the sign change in filtered trend velocity (Δtrend):
+buy when velocity crosses above zero, sell when it crosses below, hold otherwise.
+This is a smoothed, forward-looking estimate of trend direction: less noisy than
+raw price differences, more responsive than a fixed MA because Q and R adapt to
+the return variance of each training window.
 
-Calibration
------------
-Parameters (Q, R) are chosen on each training window by maximising the
-log-likelihood of the one-step-ahead prediction errors (innovations).
-The innovation at time t is:
+A 50/200-day MA is a special case of a Kalman filter with fixed, implicit Q and R.
+The difference is exponentially decaying weights (Kalman) vs equal weights over N
+days (MA). When training data shows high return variance, the filter learns a smaller
+Q/R and becomes more conservative. A fixed MA cannot adapt this way.
 
-    e[t] = log_price[t] - E[log_price[t] | log_price[1:t-1]]
-
-Under the model, innovations are Gaussian with variance S[t] (the innovation
-covariance, computed by the filter). The log-likelihood is:
-
-    ℓ(Q, R) = -½ Σ [ln(2π S[t]) + e[t]² / S[t]]
-
-We maximise this over (Q, R) using scipy.optimize.minimize with the
-Nelder-Mead method (gradient-free, robust to the curvature discontinuities
-that appear at the boundary Q→0).
-
-Signal generation
------------------
-After running the filter forward through test data (using training-calibrated
-Q, R):
-  - Buy  (1) when the filtered trend velocity (Δtrend) crosses above zero.
-  - Sell (-1) when the filtered trend velocity crosses below zero.
-  - Hold (0) otherwise.
-
-The filtered velocity is the difference between consecutive filtered state
-estimates. It is a smoothed, forward-looking estimate of trend direction -
-less noisy than raw price differences, more responsive than a fixed moving
-average because Q and R adapt to the return variance of each training window.
-
-Why this is better than a fixed moving average
------------------------------------------------
-A 50/200-day moving average is a special case of a Kalman filter with fixed,
-implicit Q and R. The difference is that a moving average uses a hard window
-(equal weights over N days, zero before that), while the Kalman filter uses
-exponentially decaying weights whose decay rate is determined by the
-calibrated Q/R ratio. When the training data shows high return variance, the
-filter learns a smaller Q/R and becomes more conservative. When return
-variance is low, Q/R increases and the filter reacts faster. This adaptation
-is the property that a fixed MA cannot provide.
-
-References
-----------
-Harvey, A.C. (1989). Forecasting, Structural Time Series Models and the
-    Kalman Filter. Cambridge University Press.
-Durbin, J. & Koopman, S.J. (2012). Time Series Analysis by State Space
-    Methods (2nd ed.). Oxford University Press.
+Harvey, A.C. (1989). Forecasting, Structural Time Series Models and the Kalman
+Filter. Cambridge University Press.
+Durbin, J. & Koopman, S.J. (2012). Time Series Analysis by State Space Methods
+(2nd ed.). Oxford University Press.
 """
 
 import warnings
@@ -98,22 +61,15 @@ class KalmanFilterStrategy(BaseStrategy):
     """
     Kalman filter trend-following strategy.
 
-    Parameters
-    ----------
-    q_init : float
-        Initial process noise variance for optimisation warm-start.
-        Default chosen to be in a reasonable range for daily log-returns.
-    r_init : float
-        Initial observation noise variance for optimisation warm-start.
+    Args:
+        q_init: Initial process noise variance for optimisation warm-start.
+            Default chosen to be in a reasonable range for daily log-returns.
+        r_init: Initial observation noise variance for optimisation warm-start.
 
-    Attributes (set by fit)
-    -----------------------
-    q_ : float
-        Calibrated process noise variance.
-    r_ : float
-        Calibrated observation noise variance.
-    log_likelihood_ : float
-        Log-likelihood of the training data under calibrated (q_, r_).
+    Attributes set by fit():
+        q_: Calibrated process noise variance.
+        r_: Calibrated observation noise variance.
+        log_likelihood_: Log-likelihood of training data under calibrated (q_, r_).
     """
 
     def __init__(

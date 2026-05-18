@@ -26,9 +26,12 @@ Output files:
 
 import argparse
 import math
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+import plotly.graph_objects as go
+import plotly.subplots as sp
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
 from backtesting_engine.config import (
@@ -202,7 +205,6 @@ def main() -> None:
     kalman_result   = None
     momentum_result = None
 
-    # ── Strategy 1: Moving Average ─────────────────────────────────────────
     if run_ma:
         _section("Strategy 1: Moving Average Crossover  (grid-search calibrated)")
         ma_result = walk_forward(
@@ -222,7 +224,6 @@ def main() -> None:
         )
         print(f"\n  Dashboard → {ma_dash}\n")
 
-    # ── Strategy 2: Kalman Filter ──────────────────────────────────────────
     if run_kalman:
         _section("Strategy 2: Kalman Filter Trend Following  (MLE calibrated)")
         kalman_result = walk_forward(
@@ -242,7 +243,6 @@ def main() -> None:
         )
         print(f"\n  Dashboard → {kalman_dash}\n")
 
-    # ── Strategy 3: Momentum ──────────────────────────────────────────────
     if run_momentum:
         _section("Strategy 3: Time-Series Momentum  (lookback grid-search calibrated)")
         momentum_result = walk_forward(
@@ -262,13 +262,11 @@ def main() -> None:
         )
         print(f"\n  Dashboard → {momentum_dash}\n")
 
-    # ── Comparative summary ────────────────────────────────────────────────
     ready = [r for r in [ma_result, kalman_result, momentum_result] if r is not None]
     if len(ready) >= 2 and ma_result is not None and kalman_result is not None and momentum_result is not None:
         _section("Comparative Summary")
         _print_comparison(ma_result, kalman_result, momentum_result)
 
-    # ── Cost sensitivity sweep ─────────────────────────────────────────────
     if args.costs_only or args.strategy == "all":
         _section("Cost Sensitivity Analysis  (how significance degrades with execution cost)")
         _run_cost_sensitivity(
@@ -296,7 +294,6 @@ def _load(
     # ("--end 2024-12-31 means include Dec 31") while respecting yfinance's API.
     yf_end: str | None = None
     if end_date is not None:
-        from datetime import date, timedelta
         yf_end = (date.fromisoformat(end_date) + timedelta(days=1)).isoformat()
     data = load_data(ticker, start_date, end_date=yf_end, use_cache=use_cache)
     validate_data(data, min_rows=_min_rows(train_years, test_years))
@@ -600,9 +597,6 @@ def _save_cost_heatmap(
     embedding makes that claim accurate.
     """
     try:
-        import plotly.graph_objects as go
-        import plotly.subplots as sp
-
         n_cols = len(sweeps)
 
         fig = sp.make_subplots(

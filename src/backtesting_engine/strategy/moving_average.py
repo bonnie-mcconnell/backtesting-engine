@@ -4,22 +4,15 @@ Moving average crossover strategy with walk-forward parameter calibration.
 Generates a buy signal when the short MA crosses above the long MA (golden
 cross) and a sell signal when it crosses below (death cross).
 
-Parameter calibration
----------------------
 During fit(), a grid search over (short_window, long_window) pairs selects
 the pair with the highest in-sample Sharpe on the training window.
 
-Reality Check interface
------------------------
 candidate_test_returns() runs every grid candidate on the TEST data and
 returns their daily return series. This is the correct data for White's
 Reality Check: we are testing whether any candidate beats the zero-return
-benchmark in the OUT-OF-SAMPLE period, not the training period.
-
-The distinction matters: training returns will always show the winning pair
-performing best by construction (that is how it was selected). Test-period
-returns for all candidates are the correct input for the Reality Check null
-distribution.
+benchmark out-of-sample, not in-sample. Training returns will always show
+the winning pair performing best by construction; test-period returns for
+all candidates are the correct input for the RC null distribution.
 """
 
 import numpy as np
@@ -40,23 +33,17 @@ class MovingAverageStrategy(BaseStrategy):
     """
     Moving average crossover with grid-search calibration.
 
-    Parameters
-    ----------
-    short_window, long_window : int
-        Initial window sizes. Overwritten by fit() on each walk-forward window.
+    Args:
+        short_window: Initial short window size. Overwritten by fit() each window.
+        long_window: Initial long window size. Overwritten by fit() each window.
 
-    Attributes set by fit()
-    -----------------------
-    short_window_, long_window_ : int
-        Calibrated window sizes for the current walk-forward window.
-        Trailing underscore follows sklearn convention: attribute exists only
-        after fit() has been called.
-    _all_candidate_pairs_ : list[tuple[int, int]]
-        All (short, long) pairs evaluated during the most recent fit().
-        Used by candidate_test_returns() to avoid recomputing the grid.
-        Leading underscore marks this as an implementation detail of the
-        Reality Check interface - not part of the strategy's primary API.
-        Trailing underscore marks it as fitted state (populated by fit()).
+    Attributes set by fit():
+        short_window_: Calibrated short window (trailing underscore = sklearn convention,
+            attribute exists only after fit() has been called).
+        long_window_: Calibrated long window.
+        _all_candidate_pairs_: All (short, long) pairs evaluated during the most recent
+            fit(). Leading underscore = implementation detail of the RC interface, not
+            part of the primary strategy API. Trailing underscore = fitted state.
     """
 
     def __init__(

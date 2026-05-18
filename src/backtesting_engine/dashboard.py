@@ -17,9 +17,13 @@ The dashboard has six panels arranged in a responsive grid:
   5. Return distribution - Histogram of daily returns with normal and
                            empirical distribution overlays. Skew and excess
                            kurtosis annotated.
-  6. Parameter evolution - (MA strategy only) How the calibrated short/long
-                           windows changed across training windows, revealing
-                           regime-dependent parameter drift.
+  6. Parameter evolution - How the calibrated parameters shift across training
+                           windows, revealing regime-dependent drift. Each strategy
+                           exposes a param_evolution_spec() listing which parameters
+                           to display: MA shows short/long windows; Kalman shows Q/R
+                           signal-to-noise ratio; Momentum shows lookback period.
+                           When no parameter history exists, falls back to a
+                           cumulative return chart vs buy-and-hold.
 
 The equity curve panel includes a Range Selector allowing the user to zoom
 to 1Y / 3Y / 5Y / All, and a Range Slider for fine-grained navigation.
@@ -32,14 +36,15 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.subplots as sp
+from scipy import stats as sp_stats
 
-from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
+from backtesting_engine.config import ANNUALISATION_FACTOR, INITIAL_PORTFOLIO_VALUE
 from backtesting_engine.models import BacktestResult, WindowResult
 
 if TYPE_CHECKING:
@@ -311,7 +316,6 @@ def _stitch_returns(valid_windows: list[WindowResult]) -> np.ndarray:
 
 def _rolling_sharpe(equity: pd.Series, window: int = 63) -> pd.Series:
     """63-day rolling annualised Sharpe ratio."""
-    from backtesting_engine.config import ANNUALISATION_FACTOR
     returns = equity.pct_change().dropna()
     roll_mean = returns.rolling(window).mean()
     roll_std = returns.rolling(window).std(ddof=1)
@@ -458,7 +462,7 @@ def _add_window_sharpes(
         colors = [_POSITIVE if s >= 0 else _NEGATIVE for s in sharpes]
 
     def _fmt_pct(v: float) -> str:
-        return f"{v:.0%}" if not (v != v) else "N/A"  # isnan check without import
+        return f"{v:.0%}" if not math.isnan(v) else "N/A"
 
     custom = [
         (f"{w.test_start.date()} → {w.test_end.date()}<br>"
@@ -514,8 +518,6 @@ def _add_return_distribution(
 ) -> None:
     if len(returns) == 0:
         return
-
-    from scipy import stats as sp_stats
 
     n_bins = min(80, max(20, len(returns) // 10))
     fig.add_trace(go.Histogram(
@@ -601,11 +603,8 @@ def _add_param_evolution(
     # If there is a second entry AND it has a very different scale (e.g. SNR vs
     # log-likelihood), it is plotted on a secondary Y-axis via yaxis2.
     primary_label, primary_key = spec[0]
-    # active_params values are typed as `object` (the widest common type across
-    # all strategies). cast() tells mypy we know these are numeric at runtime.
-    from typing import cast as _cast
     primary_vals = [
-        float(_cast(float, p.get(primary_key, float("nan"))))
+        float(cast(float, p.get(primary_key, float("nan"))))
         for p in params_list
     ]
 
@@ -621,7 +620,7 @@ def _add_param_evolution(
     # Plot remaining spec entries on the same axis (they usually share units).
     for idx, (label, key) in enumerate(spec[1:], start=1):
         vals = [
-            float(_cast(float, p.get(key, float("nan"))))
+            float(cast(float, p.get(key, float("nan"))))
             for p in params_list
         ]
         fig.add_trace(go.Scatter(

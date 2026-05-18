@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from backtesting_engine.config import MOMENTUM_LOOKBACKS as _LOOKBACK_GRID
 from backtesting_engine.strategy.base import returns_from_signals
 from backtesting_engine.strategy.momentum import (
-    _LOOKBACK_GRID,
     MomentumStrategy,
     _momentum_signals,
 )

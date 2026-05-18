@@ -64,14 +64,10 @@ ANNUALISATION_FACTOR: int = 252
 # ---------------------------------------------------------------------------
 
 RISK_FREE_RATE: float = 0.0
-# Daily risk-free rate subtracted from excess return before Sharpe/Sortino.
-# Zero is the standard default for strategy development for two reasons:
-#   1. It makes results comparable across time periods with different rate regimes.
-#   2. For a long-short or market-neutral strategy the risk-free rate is genuinely
-#      the correct hurdle; for a long-only strategy it understates the hurdle, but
-#      using zero is the more conservative assumption for a trend-following strategy
-#      that is frequently in cash between signals.
-# To use a 5% annual rate: set to 0.05 / 252 ≈ 0.000198.
+# Daily risk-free rate for Sharpe/Sortino excess return calculation.
+# Zero makes results comparable across time periods with different rate regimes
+# and is the standard default for strategy development. For a 5% annual rate:
+# set to 0.05 / 252 ≈ 0.000198.
 
 # ---------------------------------------------------------------------------
 # Monte Carlo block bootstrap significance test

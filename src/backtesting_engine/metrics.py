@@ -109,19 +109,15 @@ def _sortino(returns_array: np.ndarray) -> float:
     """
     Annualised Sortino ratio: mean excess return divided by downside deviation.
 
-    Downside deviation is the square root of the mean squared negative excess
-    return - the RMS of returns that fall below the threshold. This is the
-    standard definition from Sortino & van der Meer (1991):
+    Downside deviation per Sortino & van der Meer (1991):
 
         downside_deviation = sqrt( mean( min(r_t - T, 0)^2 ) )
 
-    where T is the threshold (here: RISK_FREE_RATE).
-
-    This differs from using std(downside_returns): std measures dispersion
-    *among* negative returns (around their mean), while downside deviation
-    measures the magnitude of negative returns *relative to zero*. For a
-    strategy with small, consistent losses, std approaches zero (giving an
-    inflated Sortino) while downside deviation correctly stays large.
+    This differs from std(downside_returns): std measures dispersion *among*
+    negative returns (around their mean), while downside deviation measures
+    the magnitude of negative returns *relative to zero*. For a strategy with
+    small, consistent losses, std approaches zero (inflated Sortino) while
+    downside deviation correctly stays large.
 
     Returns float('inf') if there are no below-threshold returns.
 
@@ -278,14 +274,8 @@ def _monte_carlo_p_value(
     n = len(returns_array)
     block_size = max(1, int(np.sqrt(n)))
 
-    # Centre returns by subtracting the sample mean before resampling.
-    # Without centring, the bootstrap distribution inherits the strategy's
-    # observed mean return, so p(boot_sharpe >= observed_sharpe) ≈ 0.5
-    # for any positive-mean strategy regardless of how strong the signal is.
-    # The correct H₀ is: the observed Sharpe arose from a zero-mean process
-    # with the same autocorrelation structure as the data.  Resampling
-    # centered returns builds a null distribution that is anchored at zero
-    # rather than at the observed mean.
+    # Centre returns: without this the bootstrap inherits the observed mean,
+    # so p ≈ 0.5 for any positive-drift strategy regardless of signal quality.
     centered = returns_array - returns_array.mean()
 
     # Tile centered array twice so circular indexing never goes out of bounds.
@@ -310,18 +300,6 @@ def _trade_diagnostics(
 ) -> tuple[float, int, float, float, float]:
     """
     Compute trade-level diagnostics: exposure, count, win rate, avg W/L, avg hold.
-
-    These numbers answer practical questions that Sharpe alone does not:
-    - exposure_fraction: Is the strategy mostly in-market or mostly in cash?
-      A strategy with 20% exposure and Sharpe 0.5 is very different from one
-      with 95% exposure and Sharpe 0.5 - the first has much lower market beta.
-    - win_rate / avg_win_loss_ratio: Does the strategy make money by being right
-      often (high win rate, small wins) or by having large winners despite
-      frequent losses (low win rate, high W/L)?  Both can be profitable but have
-      different drawdown profiles.
-    - avg_holding_days: A strategy holding for 1 day is a market-maker; one
-      holding for 60 days is a trend follower. This informs transaction cost
-      sensitivity - short holds amplify the per-trade cost drag dramatically.
 
     Args:
         portfolio_values: Daily portfolio values (used for exposure calculation).

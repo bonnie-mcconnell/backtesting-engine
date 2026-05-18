@@ -1,24 +1,18 @@
 """
 Typed data contracts between pipeline components.
 
-Immutability notes:
-  - Trade, MetricsResult, WindowResult: frozen=True - immutable, hashable.
-  - SimulationResult: not frozen - portfolio_values is a mutable pd.Series.
-  - BacktestResult: not frozen - window_results is a mutable list, and nested
-    pd.Series objects are not hashable, so frozen=True would require a custom
-    __hash__. Treat BacktestResult as read-only after construction.
+Trade, MetricsResult, and WindowResult are frozen=True (immutable, hashable).
+SimulationResult is not frozen because portfolio_values is a mutable pd.Series.
+BacktestResult is not frozen because window_results is a mutable list and the
+nested pd.Series objects are not hashable. Treat it as read-only after construction.
 
-Design note on WindowResult.active_params
-------------------------------------------
-Storing the active parameters (e.g. calibrated MA windows or Kalman Q/R)
-on each WindowResult makes the parameter evolution visible without requiring
-callers to instrument the strategy. This is essential for two things:
-  1. The dashboard parameter evolution panel (shows how parameters drift
-     across training windows, revealing regime-dependent adaptation)
-  2. Reproducibility - given a BacktestResult you can re-run any individual
-     window exactly without re-running the full walk-forward.
+active_params is stored on each WindowResult rather than on the strategy object
+so the full history of parameter evolution is preserved in BacktestResult. This
+makes the parameter evolution dashboard panel work without re-running the strategy,
+and lets you reproduce any individual window without re-running the full walk-forward.
 """
 
+import warnings
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -49,36 +43,12 @@ class MetricsResult:
     """
     Performance metrics computed from a portfolio value series.
 
-    All ratio metrics are annualised (252 trading days).
-
-    Attributes
-    ----------
-    p_value : float
-        Per-window block-bootstrap Sharpe p-value.
-    combined_p_value : float
-        Fisher's combined p-value across all walk-forward windows.
-        NaN on individual windows; populated on BacktestResult.summary_metrics.
-    reality_check_p_value : float
-        White's Reality Check p-value, corrected for data-snooping across the
-        parameter search grid. NaN for strategies without parameter search
-        (KalmanFilterStrategy) or when no candidate returns were collected.
-
-    Trade diagnostics
-    -----------------
-    exposure_fraction : float
-        Fraction of bars where the strategy held a position (0–1). A strategy
-        that is in-market 30% of the time has exposure_fraction = 0.30.
-        Lower exposure = more time in cash = less market beta, but also less
-        opportunity to earn returns. NaN if no portfolio values available.
-    trade_count : int
-        Total number of completed round-trip trades in this window.
-    win_rate : float
-        Fraction of trades with positive net P&L (0–1). NaN if no trades.
-    avg_win_loss_ratio : float
-        Mean winning P&L / mean losing P&L (absolute). A ratio > 1 means
-        winners are larger than losers on average. NaN if no wins or no losses.
-    avg_holding_days : float
-        Mean number of calendar days between trade entry and exit. NaN if no trades.
+    All ratio metrics are annualised (252 trading days). p_value is the
+    per-window block-bootstrap Sharpe p-value. combined_p_value and
+    reality_check_p_value are NaN on individual windows and populated on
+    BacktestResult.summary_metrics after the full walk-forward completes.
+    Trade diagnostics (exposure_fraction through avg_holding_days) are NaN
+    when trades were not provided to calculate_metrics().
     """
     sharpe_ratio: float
     sortino_ratio: float
@@ -98,18 +68,7 @@ class MetricsResult:
 
 @dataclass(frozen=True)
 class WindowResult:
-    """Results for one walk-forward window.
-
-    Attributes
-    ----------
-    active_params : dict[str, object]
-        The calibrated parameters used for this window's test period.
-        For MovingAverageStrategy: {'short_window': int, 'long_window': int}.
-        For KalmanFilterStrategy: {'q': float, 'r': float, 'log_likelihood': float}.
-        Empty dict for parameter-free strategies.
-        Stored here (rather than on the strategy object) so the full history
-        of parameter evolution across windows is preserved in BacktestResult.
-    """
+    """Results for one walk-forward window."""
     train_start: pd.Timestamp
     train_end: pd.Timestamp
     test_start: pd.Timestamp
@@ -117,18 +76,14 @@ class WindowResult:
     simulation_result: SimulationResult
     metrics_result: MetricsResult
     skipped: bool = False
-    # Always False in current code. Retained for API compatibility - callers who
-    # pass skipped=True explicitly will receive a DeprecationWarning. Previously
-    # used to mark no-trade windows; those are now valid flat-cash windows
-    # (Sharpe=0, p=1.0). Will be removed in a future major version.
+    # Always False in current code. Retained for API compatibility: callers who
+    # pass skipped=True will receive a DeprecationWarning. Previously used to mark
+    # no-trade windows; those are now valid flat-cash windows (Sharpe=0, p=1.0).
     active_params: dict[str, object] = field(default_factory=dict)
-    # formatted_params: human-readable parameter string from strategy.format_params().
-    # Stored at window creation time so the orchestrator and dashboard never
-    # need to know which strategy class was used.  Empty string = no parameters
-    # (e.g. a parameter-free strategy).
-    # Note: Python dataclasses do not support PEP 257 field docstrings - a
-    # triple-quoted string after a field is a free-floating string literal with
-    # no effect on help(), IDE tooltips, or any tooling. Use comments instead.
+    # Calibrated parameters for this window's test period, e.g.
+    # {'short_window': 50, 'long_window': 200}. Stored on WindowResult rather
+    # than the strategy so the full evolution history is preserved in
+    # BacktestResult and any window can be reproduced independently.
     formatted_params: str = ""
     # param_evolution_spec: list of (display_label, active_params_key) pairs
     # returned by strategy.param_evolution_spec() at window creation time.
@@ -138,7 +93,6 @@ class WindowResult:
 
     def __post_init__(self) -> None:
         if self.skipped:
-            import warnings
             warnings.warn(
                 "WindowResult.skipped=True is deprecated and will be removed in a "
                 "future version. No-trade windows are now valid flat-cash windows "
@@ -167,12 +121,9 @@ class BacktestResult:
     strategy_name: str
     window_results: list[WindowResult]
     summary_metrics: MetricsResult
-    # flat_cash_window_count: number of walk-forward windows where the strategy
-    # held cash (no trades executed).  These windows ARE included in summary
-    # metrics with Sharpe=0 and p_value=1.0 - a cash-holding window is a valid
-    # out-of-sample result and must be counted in performance attribution.
-    # Note: triple-quoted strings after dataclass fields are free-floating string
-    # literals with no effect on tooling; use inline comments (this) instead.
+    # flat_cash_window_count: windows where the strategy held cash (no trades
+    # executed). Included in summary metrics with Sharpe=0 and p_value=1.0.
+    # A cash-holding window is a valid out-of-sample result, not an error.
     flat_cash_window_count: int = 0
 
     @property

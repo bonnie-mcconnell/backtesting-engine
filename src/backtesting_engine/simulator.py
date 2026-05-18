@@ -4,13 +4,10 @@ Trade execution simulator - baseline, cost-only, no slippage or signal delay.
 This module provides `run_simulation()`: a readable, bar-by-bar implementation
 of the core execution loop used for unit testing and as a transparent reference.
 
-Relationship to `execution.py`
--------------------------------
 `run_simulation_with_execution()` in execution.py is the production path used
-by all walk-forward runs. It extends this baseline with:
-  - Configurable slippage (fill at close ± fraction × daily range)
-  - Configurable signal delay (shift signals forward N bars)
-  - `ExecutionConfig` dataclass for per-run parameter control
+by all walk-forward runs. It extends this baseline with configurable slippage
+(fill at close ± fraction × daily range), configurable signal delay, and the
+`ExecutionConfig` dataclass for per-run parameter control.
 
 `run_simulation()` here is the zero-slippage, zero-delay baseline. It always
 uses the global `TRANSACTION_COST_RATE` and fills at the signal bar's close
@@ -36,8 +33,6 @@ The loop is intentionally explicit rather than vectorised. Transparency over
 speed. For daily data on a single asset over 30 years the runtime is fine.
 """
 
-from dataclasses import dataclass
-
 import pandas as pd
 
 from backtesting_engine.config import (
@@ -45,25 +40,11 @@ from backtesting_engine.config import (
     POSITION_SIZE_FRACTION,
     TRANSACTION_COST_RATE,
 )
+from backtesting_engine.execution import _OpenPosition
 from backtesting_engine.models import SimulationResult, Trade
 
 # Valid signal values. Anything outside this set is a caller contract violation.
 _VALID_SIGNALS = frozenset({-1, 0, 1})
-
-
-@dataclass
-class _OpenPosition:
-    """
-    State for a single open long position.
-
-    Grouping entry_price, entry_date, and shares into one object means the
-    type system enforces that you cannot hold one field without the others.
-    This eliminates the assert-based None-narrowing pattern that breaks
-    silently when Python is run with the -O (optimise) flag.
-    """
-    entry_price: float
-    entry_date: pd.Timestamp
-    shares: float
 
 
 def run_simulation(data: pd.DataFrame, signals: pd.Series) -> SimulationResult:

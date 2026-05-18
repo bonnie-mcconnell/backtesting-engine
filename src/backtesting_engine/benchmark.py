@@ -10,12 +10,13 @@ has no notion of statistical significance.
 This module computes:
 
   1. Buy-and-hold metrics on the same test windows used by walk_forward(),
-     so the comparison is apples-to-apples (same data slices, same costs).
+     so the comparison uses identical data slices and identical costs.
 
-  2. Information ratio: (strategy Sharpe - benchmark Sharpe) / tracking error.
-     This is the correct risk-adjusted excess return over benchmark. A positive
-     IR means the strategy added alpha per unit of active risk, not just per
-     unit of total volatility.
+  2. Information ratio: annualised mean active return divided by active return
+     volatility. IR uses active risk (tracking error) as the denominator rather
+     than total volatility, which is the right comparison when strategies differ
+     in turnover and time in market. A positive IR means the strategy added
+     alpha per unit of active risk.
 
   3. A paired t-test on per-window Sharpe differences. Because we have ~26
      independent windows, we can test whether the strategy consistently beats
@@ -26,13 +27,15 @@ This module computes:
      strategy with worse drawdown than buy-and-hold is hard to justify even
      if its Sharpe is similar.
 
-These metrics are appended to the BacktestResult summary as a BenchmarkResult
-and surfaced in both the console output and the dashboard.
+These metrics are returned as a separate `BenchmarkResult` from `compute_benchmark()`
+and surfaced in both the console output and the dashboard. They are deliberately
+separate from `BacktestResult` rather than embedded in it: `BacktestResult`
+contains everything that walk-forward produces without any benchmark assumption;
+`BenchmarkResult` adds a specific normative comparison (vs buy-and-hold) that
+the caller explicitly requests.
 
-Reference
----------
 Grinold, R. & Kahn, R. (2000). Active Portfolio Management (2nd ed.).
-  Chapter 2 defines the information ratio and its relationship to alpha.
+Chapter 2 defines the information ratio and its relationship to alpha.
 """
 
 import dataclasses
@@ -56,39 +59,17 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class BenchmarkResult:
-    """
-    Buy-and-hold benchmark metrics computed over the same walk-forward windows.
-
-    Attributes
-    ----------
-    benchmark_sharpe : float
-        Mean per-window Sharpe for buy-and-hold, same data slices as the strategy.
-    benchmark_sortino : float
-        Mean per-window Sortino for buy-and-hold.
-    benchmark_max_drawdown : float
-        Worst per-window drawdown for buy-and-hold (not averaged).
-    information_ratio : float
-        Annualised mean active return / annualised active return volatility.
-        IR > 0 means the strategy generated positive risk-adjusted excess return.
-    sharpe_diff_t_stat : float
-        Paired t-statistic for per-window Sharpe differences (strategy - benchmark).
-    sharpe_diff_p_value : float
-        Two-sided p-value for the Sharpe difference t-test.
-    strategy_beats_benchmark_fraction : float
-        Fraction of walk-forward windows in which strategy Sharpe > benchmark Sharpe.
-    per_window_benchmark_sharpes : list[float]
-        Benchmark Sharpe ratio for each individual walk-forward window, in order.
-        Used by the dashboard to colour per-window bars against the correct
-        per-window benchmark (not the aggregate mean).
-    """
-    benchmark_sharpe: float
-    benchmark_sortino: float
-    benchmark_max_drawdown: float
-    information_ratio: float
-    sharpe_diff_t_stat: float
-    sharpe_diff_p_value: float
-    strategy_beats_benchmark_fraction: float
+    """Buy-and-hold benchmark metrics computed over the same walk-forward windows."""
+    benchmark_sharpe: float          # mean per-window Sharpe for buy-and-hold
+    benchmark_sortino: float         # mean per-window Sortino for buy-and-hold
+    benchmark_max_drawdown: float    # worst per-window drawdown (not averaged)
+    information_ratio: float         # annualised active return / active return vol; IR > 0 = positive alpha
+    sharpe_diff_t_stat: float        # paired t-stat for per-window Sharpe differences
+    sharpe_diff_p_value: float       # two-sided p-value for the Sharpe difference t-test
+    strategy_beats_benchmark_fraction: float  # fraction of windows where strategy Sharpe > B&H
     per_window_benchmark_sharpes: list[float] = dataclasses.field(default_factory=list)
+    # per-window B&H Sharpe in order - used by dashboard to colour bars against the
+    # correct per-window benchmark rather than the aggregate mean
 
 
 def compute_benchmark(

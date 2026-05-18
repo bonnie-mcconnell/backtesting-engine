@@ -1,41 +1,20 @@
 """
 Abstract base class for all trading strategies.
 
-The two-method contract
------------------------
-Every strategy must implement:
+Every strategy must implement fit(train_data) and generate_signals(data).
+fit() calibrates parameters on training data only and must return self.
+generate_signals() produces a signal Series with values in {-1, 0, 1}.
 
-  fit(train_data) -> self
-    Calibrate any learned parameters using only the training window.
-    Must not access or store information about the test period.
-    Parameter-free strategies implement this as a no-op returning self.
+Strategies with a lookback window should also implement
+generate_signals_with_context(context_data, test_data), which prepends
+warmup history so rolling indicators are initialised at the start of each
+test window.
 
-  generate_signals(data) -> pd.Series
-    Produce a signal Series for the given price data.
-    Values must be exactly: 1 (buy), -1 (sell), 0 (hold).
-
-Optionally, strategies that benefit from MA-style warmup history implement:
-
-  generate_signals_with_context(context_data, test_data) -> pd.Series
-    Generate signals for test_data using context_data as history warmup.
-    The orchestrator calls this when the strategy has a lookback period
-    that would otherwise produce NaN values at the start of the test window.
-
-The Reality Check interface
----------------------------
-Strategies that perform a parameter search during fit() should also expose:
-
-  candidate_test_returns(test_data, context_data) -> dict[Any, np.ndarray]
-    Return a dict mapping each candidate parameter set to its daily return
-    series on the TEST data (not training data). The orchestrator collects
-    these across windows to build the Reality Check candidate matrix.
-
-    This is separate from fit() so that:
-    - fit() calibrates on training data (parameter selection)
-    - candidate_test_returns() evaluates ALL candidates on test data (Reality Check)
-    These are two different operations and must not be conflated.
-
-    Return an empty dict if the strategy has no parameter search.
+Strategies that perform a parameter grid search during fit() should implement
+candidate_test_returns(test_data, context_data), which returns a dict mapping
+each candidate parameter set to its daily return series on the TEST data.
+The orchestrator collects these across windows to build the Reality Check
+candidate matrix. Return an empty dict if there is no parameter search.
 """
 
 from abc import ABC, abstractmethod
@@ -75,21 +54,8 @@ def returns_from_signals(close: np.ndarray, signals: np.ndarray) -> np.ndarray:
         - A zero in the close array would produce an infinite return. Real price
           data never has this; the guard in momentum.py (np.maximum(close, 1e-10))
           handles synthetic test data.
-        - Position is computed via vectorised forward-fill rather than a Python loop.
-          The stateful hold rule (0 = hold, 1 = buy, -1 = sell) is equivalent to
-          replacing 0s with NaN and forward-filling the last non-zero signal. This
-          avoids per-bar Python overhead; for the MA grid search (112 pairs × 756
-          training bars per window) it is roughly 10–20× faster than a loop.
     """
-    # Vectorised hold logic: replace 0 (hold) with NaN, forward-fill the most
-    # recent buy (+1) or sell (-1), then map to {+1 → long, else → flat}.
-    #
-    # This is semantically identical to the naive Python loop - the loop simply
-    # inspects each bar and carries the last non-zero signal forward. Pandas
-    # ffill does the same operation in C, roughly 10–20× faster on typical
-    # window sizes. For the MA grid search (112 candidate pairs × ~756-bar
-    # training windows) the speedup is measurable across the full run.
-    #
+    # replace 0 (hold) with NaN, forward-fill the last buy/sell, map to position.
     # Correctness sketch for signals = [0, 1, 0, 0, -1, 0]:
     #   replace 0→NaN  → [NaN, 1, NaN, NaN, -1, NaN]
     #   ffill          → [NaN,  1,   1,   1,  -1,  -1]
@@ -206,20 +172,10 @@ class BaseStrategy(ABC):
 
     def format_params(self) -> str:
         """
-        Return a compact human-readable string of the current active parameters.
+        Compact human-readable string of current parameters, e.g. 'MA(50/200)'.
 
-        Used by the CLI results table and anywhere parameters are displayed
-        in text form. The default implementation calls str(self.active_params()).
-        Strategies override this to return a more readable format - for example,
-        MovingAverageStrategy returns 'MA(50/200)' rather than a raw dict.
-
-        This method exists so that main.py never needs to inspect which strategy
-        it is talking to. Adding a new strategy only requires implementing this
-        method in the new class, not editing the orchestrator.
-
-        Returns:
-            A compact string, e.g. 'MA(50/200)', 'SNR=1.23e-03', 'MOM(90)'.
-            Empty string for parameter-free strategies.
+        Override to return a readable format. Default calls str(active_params()).
+        Empty string for parameter-free strategies.
         """
         params = self.active_params()
         if not params:
@@ -228,25 +184,10 @@ class BaseStrategy(ABC):
 
     def param_evolution_spec(self) -> list[tuple[str, str]]:
         """
-        Return a specification for the parameter evolution dashboard panel.
+        List of (y_axis_label, active_params_key) pairs for the dashboard panel.
 
-        Each element is a (y_axis_label, active_params_key) pair describing
-        one line to plot across walk-forward windows. The dashboard uses this
-        to render the parameter evolution panel without knowing which strategy
-        class it is talking to.
-
-        Default returns a generic spec derived from active_params() keys.
-        Strategies with multiple parameters (e.g. MA short/long windows)
-        override this to return one entry per line in the plot.
-
-        Returns:
-            List of (display_label, active_params_key) tuples.
-            Empty list means no parameter evolution panel (parameter-free strategy).
-
-        Examples:
-            MA:    [("Short window (days)", "short_window"), ("Long window (days)", "long_window")]
-            Kalman:[("Q/R signal-to-noise ratio", "snr"), ("Log-likelihood", "log_likelihood")]
-            Momentum: [("Lookback (days)", "lookback")]
+        Override when the strategy has calibrated parameters to plot over time.
+        Default returns one entry per active_params() key with the key as label.
         """
         params = self.active_params()
         if not params:
@@ -256,23 +197,10 @@ class BaseStrategy(ABC):
 
     def context_window_size(self) -> int:
         """
-        Return the number of bars of warmup history needed before signals are valid.
+        Number of training-tail bars passed as warmup context before each test window.
 
-        The walk-forward orchestrator slices the last context_window_size() bars
-        from the training window and passes them to generate_signals_with_context()
-        so that rolling indicators (moving averages, lookback windows, Kalman state)
-        are fully initialised at the start of each test period.
-
-        Override this method whenever generate_signals_with_context() needs history
-        to produce valid signals at bar 0 of the test window. Returning 0 means
-        the strategy requires no warmup context (e.g. it is stateless or handles
-        initialisation internally).
-
-        Default: 50 bars - conservative for most state-space models and short-window
-        indicators. Strategies with long lookback periods (e.g. a 200-day MA) must
-        override this to return a value at least as large as their longest window.
-
-        Returns:
-            Number of training-tail bars to pass as context. Non-negative integer.
+        Override when the strategy needs prior history for signals to be valid at
+        test bar 0. Default is 50, which covers most short-window indicators.
+        Strategies with long lookbacks (e.g. 200-day MA) must override this.
         """
         return 50

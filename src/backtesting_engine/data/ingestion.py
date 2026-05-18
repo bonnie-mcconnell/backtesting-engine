@@ -21,8 +21,6 @@ intraday range. The clip is applied only when the discrepancy is below a thresho
 (0.5% of close) - larger discrepancies indicate a data error and raise rather than
 silently adjust.
 
-Caching
--------
 Downloaded data is cached as Parquet in ~/.cache/backtesting-engine/. A cached
 file is used if it exists and was written within the last 24 hours (or up to 1 year
 for fixed end_date runs, since frozen data does not change). Set use_cache=False to
@@ -31,8 +29,11 @@ different tickers, start dates, and end dates are cached independently.
 """
 
 import hashlib
+import time
+import warnings
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -107,8 +108,6 @@ def _load_from_cache(
     If the file exists but is stale, it is left in place (will be overwritten
     on next successful download).
     """
-    import time
-
     path = _cache_path(ticker, start_date, end_date)
     if not path.exists():
         return None
@@ -132,7 +131,6 @@ def _save_to_cache(
     data: pd.DataFrame, ticker: str, start_date: str, end_date: str | None = None
 ) -> None:
     """Write data to Parquet cache, warning (but not raising) on write errors."""
-    import warnings
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _cache_path(ticker, start_date, end_date)
@@ -164,8 +162,6 @@ def _download_and_clean(
     timeout or rate-limit returns an empty DataFrame, which we treat as a
     retriable condition rather than an immediate hard failure.
     """
-    import time
-
     end_ts = pd.Timestamp(end_date) if end_date is not None else pd.Timestamp.now()
     last_exc: Exception | None = None
 
@@ -269,8 +265,6 @@ def _reconcile_adjusted_close(data: pd.DataFrame) -> None:
     exceeds _MAX_CLIP_FRACTION of the closing price, which indicates a real
     data problem rather than a routine dividend adjustment.
     """
-    import numpy as np
-
     below_low = data["close"] < data["low"]
     above_high = data["close"] > data["high"]
     problem_rows = below_low | above_high

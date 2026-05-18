@@ -3,14 +3,13 @@ Walk-forward validation orchestrator.
 
 For each rolling window the orchestrator:
   1. Slices training data and calls strategy.fit(train_data).
-  2. Generates out-of-sample signals with warmup context.
-  3. Simulates trades via the configured execution model.
-  4. Computes per-window metrics and block-bootstrap p-value.
-  5. Collects all candidate TEST-period returns for White's Reality Check.
-  6. Stores calibrated parameters on WindowResult for drift visualisation.
+  2. Records calibrated parameters (active_params, formatted_params, param_evolution_spec).
+  3. Generates out-of-sample signals with warmup context.
+  4. Simulates trades via the configured execution model.
+  5. Computes per-window metrics and block-bootstrap p-value.
+  6. Collects all candidate TEST-period returns for White's Reality Check.
+  7. Stores calibrated parameters on WindowResult for drift visualisation.
 
-Statistical aggregation
------------------------
 Fisher's combined p-value (-2 Σ ln(pᵢ) ~ χ²(2k)) is the primary
 significance metric across windows.
 
@@ -92,9 +91,8 @@ def walk_forward(
     window_results: list[WindowResult] = []
     flat_cash_windows = 0
 
-    # Collect (short, long) → returns dicts per window, for Reality Check.
-    # Key insight: these are TEST-period returns for every candidate, collected
-    # AFTER fit() so parameters are calibrated but test data is unseen.
+    # Collect candidate returns per window for Reality Check.
+    # TEST-period returns only, collected after fit() so test data is unseen.
     window_candidate_returns: list[dict[Any, pd.Series]] = []
 
     while window_start + train_days + test_days <= len(data):
@@ -104,21 +102,16 @@ def walk_forward(
         train_data = data.iloc[window_start:train_end]
         test_data  = data.iloc[train_end:test_end]
 
-        # ── Step 1: Calibrate parameters in-sample ──────────────────────
         strategy.fit(train_data)
 
-        # ── Step 2: Record calibrated parameters for this window ─────────
-        # Stored on WindowResult for the dashboard parameter evolution panel
-        # and to allow re-running any individual window without re-fitting.
+        # Record calibrated parameters for the dashboard and per-window reproducibility.
         active_params = strategy.active_params()
         formatted_params = strategy.format_params()
         param_evo_spec = strategy.param_evolution_spec()
 
-        # ── Step 3: Generate signals with warmup context ─────────────────
         context_data = _get_context(strategy, train_data)
         signals = strategy.generate_signals_with_context(context_data, test_data)
 
-        # ── Step 4: Simulate with execution model ────────────────────────
         sim = run_simulation_with_execution(test_data, signals, execution)
 
         if not sim.trades:
@@ -157,7 +150,6 @@ def walk_forward(
             window_start += test_days
             continue
 
-        # ── Step 5: Compute out-of-sample metrics ─────────────────────────
         if sim.portfolio_values is None:
             # run_simulation_with_execution always sets portfolio_values, even
             # when no trades execute. This guard exists because asserts are
@@ -182,9 +174,7 @@ def walk_forward(
             param_evolution_spec=param_evo_spec,
         ))
 
-        # ── Step 6: Collect TEST-period candidate returns ─────────────────
-        # Call candidate_test_returns() AFTER fit() so the parameter search
-        # has run, but pass test_data so returns are out-of-sample.
+        # candidate_test_returns() is called after fit() - returns are out-of-sample.
         candidate_returns = strategy.candidate_test_returns(test_data, context_data)
         if candidate_returns:
             window_candidate_returns.append(candidate_returns)
@@ -198,24 +188,26 @@ def walk_forward(
             "years of data."
         )
 
-    # All windows are now valid (flat-cash windows are included with Sharpe=0,
-    # p=1.0).  'valid' is simply all window_results since skipped is always False.
-    valid = window_results
+    # Every window in window_results has skipped=False (flat-cash windows are
+    # valid results, not errors). The BacktestResult.valid_windows property
+    # filters on skipped=False, so it returns all windows. We use window_results
+    # directly here to avoid the O(n) filter on a list we already have in full.
+    all_windows = window_results
 
     # Guard: if every single window was flat-cash (zero trades across the entire
     # dataset), the strategy never generated a signal.  This usually means the
     # calibration produced degenerate parameters.  Surface a clear error rather
     # than silently returning a result that looks valid but says nothing.
-    total_trades = sum(len(w.simulation_result.trades) for w in valid)
+    total_trades = sum(len(w.simulation_result.trades) for w in all_windows)
     if total_trades == 0:
         raise ValueError(
             f"Strategy '{strategy.__class__.__name__}' generated zero trades across "
-            f"all {len(valid)} walk-forward windows.  "
+            f"all {len(all_windows)} walk-forward windows.  "
             "Check that strategy parameters produce signals on this data range.  "
             "If using custom parameters, try widening the grid or reducing window sizes."
         )
 
-    summary = _build_summary_metrics(valid, window_candidate_returns, bootstrap_seed=bootstrap_seed)
+    summary = _build_summary_metrics(all_windows, window_candidate_returns, bootstrap_seed=bootstrap_seed)
 
     return BacktestResult(
         strategy_name=strategy.__class__.__name__,
@@ -271,9 +263,6 @@ def _build_summary_metrics(
       can span window boundaries; per-window averaging misses cross-window
       drawdowns and overstates the ratio by up to 3x.
     - inf values are excluded from means (treated as undefined for that window).
-      Note: flat-cash windows no longer produce inf - they contribute
-      sortino=0.0 and omega=1.0, so they correctly participate in means.
-      inf may still appear if a non-flat-cash window produces extreme values.
 
     Reality Check uses test-period returns of every candidate from every
     window. build_candidate_return_matrix() intersects the candidate keys
@@ -409,10 +398,10 @@ def _flat_cash_metrics() -> MetricsResult:
     """
     return MetricsResult(
         sharpe_ratio=0.0,
-        sortino_ratio=0.0,       # was inf - caused silent exclusion from summary mean
+        sortino_ratio=0.0,
         max_drawdown=0.0,
         calmar_ratio=float("nan"),
-        omega_ratio=1.0,         # was inf - caused silent exclusion from summary mean
+        omega_ratio=1.0,
         p_value=1.0,
         combined_p_value=float("nan"),
         reality_check_p_value=float("nan"),

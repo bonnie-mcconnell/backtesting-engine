@@ -35,10 +35,8 @@ Real execution has three additional frictions:
    significance. The breakeven cost is the most important single number for
    deciding whether a backtested strategy is worth pursuing live.
 
-ExecutionConfig
----------------
-A dataclass holding all execution parameters. Passed to
-run_simulation_with_execution() instead of using global config constants,
+`ExecutionConfig` is a dataclass holding all execution parameters. Passed to
+`run_simulation_with_execution()` instead of using global config constants,
 allowing cost sensitivity sweeps without touching config.py.
 """
 
@@ -74,34 +72,16 @@ class ExecutionConfig:
     """
     Parameters controlling trade execution realism.
 
-    The defaults here match the CLI defaults and the README examples:
-        cost = 0.1% per side (retail ETF brokerage)
-        slippage = 5% of daily high-low range
-        delay = 1 bar (signal on day t, fill on day t+1)
+    Defaults match the CLI and README: cost=0.1%/side, slippage=5% of daily
+    range, delay=1 bar. These are intentionally conservative so out-of-the-box
+    results reflect realistic execution, not fill-at-close.
 
-    These defaults are intentionally conservative so that out-of-the-box
-    results reflect realistic execution, not the best-case fill-at-close model.
-
-    For zero-friction comparison (e.g. to verify strategy logic):
+    For zero-friction comparison (e.g. to verify strategy logic in isolation):
         ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0)
-
-    Attributes
-    ----------
-    transaction_cost_rate : float
-        Proportional fee per side (e.g. 0.001 = 0.1%). Applied to both
-        entry and exit.
-    slippage_factor : float
-        Fraction of the daily high-low range added to buy fills and
-        subtracted from sell fills. 0.0 = fill at close (no slippage).
-        0.05 = 5% of the daily range, which is conservative for liquid ETFs.
-    signal_delay : int
-        Number of bars to delay signal execution. 0 = fill at signal bar's
-        close. 1 = fill at next bar's close (standard one-day delay that
-        prevents lookahead bias from using the close that generated the signal).
     """
-    transaction_cost_rate: float = TRANSACTION_COST_RATE   # 0.001
-    slippage_factor: float = 0.05
-    signal_delay: int = 1
+    transaction_cost_rate: float = TRANSACTION_COST_RATE   # 0.001 = 0.1% per side
+    slippage_factor: float = 0.05    # fraction of daily high-low range; 0 = fill at close
+    signal_delay: int = 1            # bars to delay execution; 1 prevents lookahead bias
 
     def __post_init__(self) -> None:
         if self.transaction_cost_rate < 0:
@@ -385,6 +365,11 @@ def cost_sensitivity_sweep(
     results are reproducible when a fixed seed is desired.  Defaults to
     BLOCK_BOOTSTRAP_SEED (config.py).
     """
+    # os and concurrent.futures are imported here rather than at module level.
+    # This is intentional: cost_sensitivity_sweep is only called when the user
+    # requests a cost sweep. Deferring these imports keeps them visible next to
+    # the code that uses them, and documents that this function is the sole
+    # entry point for parallel execution in this module.
     import os
     from concurrent.futures import ProcessPoolExecutor, as_completed
 

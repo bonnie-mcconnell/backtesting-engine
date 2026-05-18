@@ -1,8 +1,6 @@
 """
 Time-series momentum strategy with walk-forward lookback calibration.
 
-Strategy
---------
 Buy when the T-day return (log(P[t] / P[t-T])) is positive; sell when negative.
 This is the simplest version of the time-series momentum effect documented by
 Moskowitz, Ooi & Pedersen (2012): assets that have been going up tend to continue
@@ -10,36 +8,25 @@ going up over the next month.
 
 The lookback T controls the signal horizon. Short lookbacks (20–40 days) produce
 noisy, high-turnover signals. Long lookbacks (120–250 days) are smoother but
-slower to respond to reversals. The right T depends on the asset and the period.
+slower to respond to reversals.
 
-Calibration
------------
 During fit(), a grid search over T ∈ {20, 40, 60, 90, 120, 180, 250} selects
-the lookback with the highest in-sample Sharpe ratio. This is the same grid-search
-pattern as MovingAverageStrategy, which means:
+the lookback with the highest in-sample Sharpe. Same grid-search pattern as
+MovingAverageStrategy: candidate_test_returns() feeds all 7 candidates into
+White's Reality Check, and the calibrated lookback is stored in active_params()
+for the parameter evolution panel.
 
-  1. The walk-forward engine calls candidate_test_returns() to collect test-period
-     returns for all 7 candidates - feeding them into White's Reality Check.
-  2. The calibrated lookback is stored in active_params() for the parameter
-     evolution panel.
-
-Why time-series momentum rather than cross-sectional?
 Cross-sectional momentum ranks assets against each other and goes long the top
-decile, short the bottom. That requires multiple assets. Time-series momentum
-asks only whether a single asset is trending up or down - the same question as
-a moving average crossover, but answered differently. Instead of comparing two
-moving averages (which is a ratio of two smoothed prices), momentum uses the raw
-return over a fixed window (which is a single price ratio). The two signals are
-correlated but not identical.
+decile, short the bottom. Time-series momentum asks only whether a single asset
+is trending up or down: the same question as a moving average crossover, but
+answered differently. Instead of comparing two smoothed prices, momentum uses the
+raw return over a fixed window. The two signals are correlated but not identical.
+The practical difference: a MA crossover can stay long through a sharp reversal
+if the long MA hasn't caught up; a momentum signal flips the same day the lookback
+return turns negative.
 
-The practical difference shows up in fast-reversing markets: a moving average
-crossover can stay long through a sharp reversal if the long MA hasn't caught up.
-A momentum signal flips the same day the lookback return turns negative.
-
-References
-----------
 Moskowitz, T.J., Ooi, Y.H., & Pedersen, L.H. (2012). Time Series Momentum.
-  Journal of Financial Economics, 104(2), 228-250.
+Journal of Financial Economics, 104(2), 228-250.
 """
 
 import numpy as np
@@ -49,31 +36,19 @@ from backtesting_engine.config import MOMENTUM_LOOKBACKS
 from backtesting_engine.metrics import _sharpe as _sharpe_annualised
 from backtesting_engine.strategy.base import BaseStrategy, returns_from_signals
 
-# Lookback grid now lives in config.py as MOMENTUM_LOOKBACKS so it can be
-# changed from one place alongside the MA grid constants.
-_LOOKBACK_GRID: list[int] = MOMENTUM_LOOKBACKS
-
 
 class MomentumStrategy(BaseStrategy):
     """
     Time-series momentum with calibrated lookback.
 
-    Parameters
-    ----------
-    lookback : int
-        Initial lookback in trading days. Overwritten by fit() on each
-        walk-forward window.
+    Args:
+        lookback: Initial lookback in trading days. Overwritten by fit() each window.
 
-    Attributes set by fit()
-    -----------------------
-    lookback_ : int
-        Calibrated lookback for the current walk-forward window.
-        Trailing underscore follows sklearn convention: set only after fit().
-    _all_lookbacks_ : list[int]
-        All lookbacks evaluated during the most recent fit(). Used by
-        candidate_test_returns() to build the Reality Check matrix.
-        Leading underscore marks this as an implementation detail of the
-        Reality Check interface. Trailing underscore marks it as fitted state.
+    Attributes set by fit():
+        lookback_: Calibrated lookback (trailing underscore = sklearn convention).
+        _all_lookbacks_: All lookbacks evaluated during the most recent fit(), used
+            by candidate_test_returns() for the Reality Check matrix (leading
+            underscore = RC implementation detail, trailing = fitted state).
     """
 
     def __init__(self, lookback: int = 120) -> None:
@@ -111,7 +86,7 @@ class MomentumStrategy(BaseStrategy):
         best_lookback = self.lookback_
         evaluated: list[int] = []
 
-        for lb in _LOOKBACK_GRID:
+        for lb in MOMENTUM_LOOKBACKS:
             if len(close) < lb + 2:
                 continue
             evaluated.append(lb)

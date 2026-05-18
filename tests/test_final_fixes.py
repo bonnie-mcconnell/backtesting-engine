@@ -1,12 +1,14 @@
 """
-Tests added in the final fix pass (v0.6.1 → v0.6.2).
+Tests for the final fix and cleanup pass (see CHANGELOG v0.8.0).
 
 Covers:
   1. WindowResult.skipped=True fires DeprecationWarning.
-  2. MOMENTUM_LOOKBACKS in config drives _LOOKBACK_GRID in momentum.py.
-  3. build_candidate_return_matrix accepts both tuple and int keys (not just tuples).
+  2. MOMENTUM_LOOKBACKS in config drives momentum.py's fit() grid directly
+     (the _LOOKBACK_GRID alias was removed in v0.8.0).
+  3. build_candidate_return_matrix accepts both tuple and int keys.
   4. _extract_active_params no longer exists in walk_forward (was dead code).
   5. Each strategy exposes format_params() - no strategy-specific knowledge in main.py.
+  6. Each strategy exposes param_evolution_spec() - dashboard has no isinstance checks.
 """
 
 import warnings
@@ -68,14 +70,37 @@ class TestWindowResultDeprecationWarning:
 
 
 class TestMomentumLookbackConfig:
-    """MOMENTUM_LOOKBACKS in config.py must drive the momentum strategy grid."""
+    """MOMENTUM_LOOKBACKS in config.py must drive the momentum strategy grid.
+
+    The _LOOKBACK_GRID alias was removed in favour of referencing MOMENTUM_LOOKBACKS
+    directly from fit(). These tests verify the canonical grid is used correctly.
+    """
 
     def test_config_lookbacks_match_strategy_grid(self) -> None:
+        """fit() must evaluate exactly MOMENTUM_LOOKBACKS candidates.
+
+        Previously _LOOKBACK_GRID was a module-level alias that could silently
+        diverge from config. Now momentum.py imports and uses MOMENTUM_LOOKBACKS
+        directly, so this test verifies that after fit(), _all_lookbacks_ contains
+        exactly the candidates from MOMENTUM_LOOKBACKS (filtered by data length).
+        """
+        import numpy as np
+        import pandas as pd
+
         from backtesting_engine.config import MOMENTUM_LOOKBACKS
-        from backtesting_engine.strategy.momentum import _LOOKBACK_GRID
-        assert MOMENTUM_LOOKBACKS == _LOOKBACK_GRID, (
-            "Momentum strategy _LOOKBACK_GRID has diverged from config.MOMENTUM_LOOKBACKS. "
-            "Edit config.py only - never edit the grid directly in momentum.py."
+        from backtesting_engine.strategy.momentum import MomentumStrategy
+
+        # Use enough data that all lookbacks are evaluated (need close > max_lb + 2)
+        n = max(MOMENTUM_LOOKBACKS) + 50
+        dates = pd.date_range("2020-01-01", periods=n, freq="B")
+        close = 100.0 + np.sin(np.linspace(0, 4 * np.pi, n)) * 10
+        data = pd.DataFrame({"close": close}, index=dates)
+
+        s = MomentumStrategy()
+        s.fit(data)
+        assert s._all_lookbacks_ == MOMENTUM_LOOKBACKS, (
+            f"fit() evaluated {s._all_lookbacks_}, expected {MOMENTUM_LOOKBACKS}. "
+            "momentum.py must iterate over MOMENTUM_LOOKBACKS from config.py."
         )
 
     def test_config_lookbacks_are_sorted_ascending(self) -> None:
@@ -216,19 +241,18 @@ class TestFormatParams:
 
         assert ParameterFree().format_params() == ""
 
-    def test_walk_forward_stores_formatted_params_on_window(self) -> None:
-        from helpers import make_oscillating_data
+    def test_walk_forward_stores_formatted_params_on_window(
+        self, wf_result_504: object
+    ) -> None:
+        """formatted_params must be set on every non-empty window.
 
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
-        data = make_oscillating_data(504, with_high_low=False)
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
+        Uses the shared wf_result_504 fixture (module scope) to avoid running a
+        redundant walk_forward with full MA grid search. The fixed-window MA result
+        still stores formatted_params correctly - it does not depend on grid search.
+        """
+        from backtesting_engine.models import BacktestResult
+        result = wf_result_504
+        assert isinstance(result, BacktestResult)
         for w in result.valid_windows:
             if w.simulation_result.trades:
                 assert w.formatted_params.startswith("MA("), (
@@ -324,21 +348,18 @@ class TestParamEvolutionSpec:
 
         assert ParameterFree().param_evolution_spec() == []
 
-    def test_walk_forward_stores_spec_on_window_result(self) -> None:
-        from helpers import make_oscillating_data
+    def test_walk_forward_stores_spec_on_window_result(
+        self, wf_result_504: object
+    ) -> None:
+        """param_evolution_spec must be set with 2 entries on every MA window.
 
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
-        data = make_oscillating_data(504, with_high_low=False)
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
+        Uses the shared wf_result_504 fixture (module scope). Fixed-window MA
+        still stores param_evolution_spec correctly via strategy.param_evolution_spec().
+        """
+        from backtesting_engine.models import BacktestResult
+        result = wf_result_504
+        assert isinstance(result, BacktestResult)
         for w in result.valid_windows:
-            # MA strategy should have 2-entry spec on every window
             assert len(w.param_evolution_spec) == 2, (
                 f"Expected 2-entry MA spec, got: {w.param_evolution_spec}"
             )

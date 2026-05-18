@@ -1,4 +1,23 @@
-"""End-to-end tests for the walk-forward, benchmark, and dashboard pipeline."""
+"""End-to-end tests for the walk-forward, benchmark, and dashboard pipeline.
+
+Performance design
+------------------
+Integration tests are expensive by nature: they run real walk_forward calls
+with full strategy grid searches. The original version used setup_method (which
+re-runs walk_forward for every test method in a class) and a _run() helper
+called independently six times in TestCrossComponentConsistency.
+
+This version uses class-scoped fixtures so each expensive walk_forward call
+runs exactly once per class, not once per test method.
+
+  TestFullPipelineMA:            1 MA walk_forward (was 9 × setup_method)
+  TestFullPipelineKalman:        1 Kalman walk_forward (was per-test)
+  TestFullPipelineMomentum:      1 Momentum walk_forward (was per-test)
+  TestCrossComponentConsistency: 1 MA walk_forward (was 6 × _run())
+  TestPipelineEdgeCases:         4 separate calls (each tests distinct behaviour)
+
+Total: 8 walk_forward calls vs ~26 previously.
+"""
 
 from __future__ import annotations
 
@@ -24,35 +43,28 @@ from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
 # ---------------------------------------------------------------------------
-# Shared fixtures
+# Shared helpers
 # ---------------------------------------------------------------------------
-
 
 def _make_trending_data(n: int = 756, seed: int = 0) -> pd.DataFrame:
     """
-    Synthetic OHLCV with a gentle uptrend and some oscillation.
+    Synthetic OHLCV with a gentle uptrend and oscillation.
 
     Uses a fixed seed so tests are deterministic. The slight positive drift
-    ensures at least some trade signals are generated across all windows.
-    n=756 = 3 years of daily data, enough for 1-year train / 6-month test
-    with ~4 walk-forward windows.
+    + sine oscillation ensures at least some MA crossover signals are
+    generated across all windows. n=756 = ~3 years, enough for 1+1yr windows.
     """
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2018-01-01", periods=n, freq="B")
     t = np.arange(n, dtype=float)
-    # Gentle uptrend + sine oscillation to generate crossover signals
     close = 100.0 + 0.02 * t + 8.0 * np.sin(2 * np.pi * t / 80) + rng.normal(0, 0.5, n)
-    close = np.maximum(close, 1.0)   # guard against negatives on synthetic data
+    close = np.maximum(close, 1.0)
     high = close * (1.0 + 0.005 + 0.003 * rng.random(n))
     low = close * (1.0 - 0.005 - 0.003 * rng.random(n))
-    return pd.DataFrame(
-        {"close": close, "high": high, "low": low},
-        index=dates,
-    )
+    return pd.DataFrame({"close": close, "high": high, "low": low}, index=dates)
 
 
 def _zero_friction() -> ExecutionConfig:
-    """Zero-friction config for fast integration tests."""
     return ExecutionConfig(
         transaction_cost_rate=0.0,
         slippage_factor=0.0,
@@ -61,194 +73,291 @@ def _zero_friction() -> ExecutionConfig:
 
 
 # ---------------------------------------------------------------------------
-# Full pipeline: walk_forward → benchmark → dashboard
+# Class-scoped fixtures for shared expensive results
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="class")
+def ma_pipeline():
+    """
+    Full MA pipeline result shared across all TestFullPipelineMA tests.
+
+    scope="class" means walk_forward runs once for the class, not once per test.
+    Previously setup_method() re-ran the full MA grid search for every test
+    method - 9 redundant calls for the same data.
+    """
+    data = _make_trending_data()
+    exec_cfg = _zero_friction()
+    result = walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=1,
+        testing_window_years=1,
+        execution=exec_cfg,
+        bootstrap_seed=42,
+    )
+    benchmark = compute_benchmark(result, data, execution=exec_cfg)
+    return {"result": result, "data": data, "exec": exec_cfg, "benchmark": benchmark}
+
+
+@pytest.fixture(scope="class")
+def kalman_pipeline():
+    """Full Kalman pipeline result shared across TestFullPipelineKalman tests."""
+    data = _make_trending_data(seed=1)
+    exec_cfg = _zero_friction()
+    result = walk_forward(
+        data, KalmanFilterStrategy(),
+        training_window_years=1,
+        testing_window_years=1,
+        execution=exec_cfg,
+        bootstrap_seed=42,
+    )
+    benchmark = compute_benchmark(result, data, execution=exec_cfg)
+    return {"result": result, "data": data, "exec": exec_cfg, "benchmark": benchmark}
+
+
+@pytest.fixture(scope="class")
+def momentum_pipeline():
+    """Full Momentum pipeline result shared across TestFullPipelineMomentum tests."""
+    data = _make_trending_data(seed=3)
+    exec_cfg = _zero_friction()
+    result = walk_forward(
+        data, MomentumStrategy(),
+        training_window_years=1,
+        testing_window_years=1,
+        execution=exec_cfg,
+        bootstrap_seed=42,
+    )
+    benchmark = compute_benchmark(result, data, execution=exec_cfg)
+    return {"result": result, "data": data, "exec": exec_cfg, "benchmark": benchmark}
+
+
+@pytest.fixture(scope="class")
+def cross_component_pipeline():
+    """
+    Shared MA pipeline for TestCrossComponentConsistency.
+
+    Previously _run() was called independently for each of the 6 tests in
+    the class, each running the full MA grid search. Now it runs once.
+    """
+    data = _make_trending_data(seed=10)
+    exec_cfg = _zero_friction()
+    result = walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=1,
+        testing_window_years=1,
+        execution=exec_cfg,
+        bootstrap_seed=42,
+    )
+    bm = compute_benchmark(result, data, execution=exec_cfg)
+    return {"result": result, "data": data, "exec": exec_cfg, "benchmark": bm}
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline: MA strategy
+# ---------------------------------------------------------------------------
 
 class TestFullPipelineMA:
-    """Moving Average strategy: full pipeline integration."""
+    """Moving Average strategy: full pipeline integration.
 
-    def setup_method(self) -> None:
-        self.data = _make_trending_data()
-        self.exec = _zero_friction()
-        self.result = walk_forward(
-            self.data, MovingAverageStrategy(),
-            training_window_years=1,
-            testing_window_years=1,
-            execution=self.exec,
-            bootstrap_seed=42,
-        )
+    All tests share a single walk_forward result via the ma_pipeline fixture.
+    Tests verify result properties, not the walk_forward call itself - so
+    sharing is correct and doesn't weaken the assertions.
+    """
 
-    def test_walk_forward_returns_backtest_result(self) -> None:
-        assert isinstance(self.result, BacktestResult)
+    def test_walk_forward_returns_backtest_result(self, ma_pipeline: dict) -> None:
+        assert isinstance(ma_pipeline["result"], BacktestResult)
 
-    def test_result_has_windows(self) -> None:
-        assert len(self.result.window_results) > 0
+    def test_result_has_windows(self, ma_pipeline: dict) -> None:
+        assert len(ma_pipeline["result"].window_results) > 0
 
-    def test_summary_metrics_are_finite_or_nan(self) -> None:
-        m = self.result.summary_metrics
-        # Sharpe and Sortino can be NaN only if all windows were flat-cash.
-        # With trending synthetic data at least one window should trade.
+    def test_summary_metrics_are_finite_or_nan(self, ma_pipeline: dict) -> None:
+        m = ma_pipeline["result"].summary_metrics
         assert not math.isnan(m.sharpe_ratio), "Sharpe should be finite for trending data"
         assert not math.isnan(m.max_drawdown)
-        # p-values must be in [0, 1]
         assert 0.0 <= m.p_value <= 1.0
         assert 0.0 <= m.combined_p_value <= 1.0
 
-    def test_fisher_p_and_rc_p_cover_same_windows(self) -> None:
-        """Both statistics must be computed. RC may be NaN only if no candidates."""
-        m = self.result.summary_metrics
+    def test_fisher_p_and_rc_p_cover_same_windows(self, ma_pipeline: dict) -> None:
+        m = ma_pipeline["result"].summary_metrics
         assert not math.isnan(m.combined_p_value), "Fisher p must always be computable"
-        # MA has a candidate grid, so RC p should be finite too.
         assert not math.isnan(m.reality_check_p_value), (
             "RC p should be finite for MA (has parameter grid)"
         )
 
-    def test_benchmark_computes_without_error(self) -> None:
-        bm = compute_benchmark(self.result, self.data, execution=self.exec)
+    def test_benchmark_computes_without_error(self, ma_pipeline: dict) -> None:
+        bm = ma_pipeline["benchmark"]
         assert isinstance(bm, BenchmarkResult)
-        assert len(bm.per_window_benchmark_sharpes) == len(self.result.valid_windows)
-
-    def test_benchmark_per_window_sharpes_mean_invariant(self) -> None:
-        """Mean of per-window BH Sharpes must equal benchmark_sharpe."""
-        bm = compute_benchmark(self.result, self.data, execution=self.exec)
-        mean_pw = float(np.mean(bm.per_window_benchmark_sharpes))
-        assert math.isclose(mean_pw, bm.benchmark_sharpe, rel_tol=1e-9), (
-            f"Mean of per-window {mean_pw:.6f} != aggregate {bm.benchmark_sharpe:.6f}"
+        assert len(bm.per_window_benchmark_sharpes) == len(
+            ma_pipeline["result"].valid_windows
         )
 
-    def test_dashboard_writes_html_without_error(self) -> None:
-        bm = compute_benchmark(self.result, self.data, execution=self.exec)
+    def test_benchmark_per_window_sharpes_mean_invariant(
+        self, ma_pipeline: dict
+    ) -> None:
+        bm = ma_pipeline["benchmark"]
+        mean_pw = float(np.mean(bm.per_window_benchmark_sharpes))
+        assert math.isclose(mean_pw, bm.benchmark_sharpe, rel_tol=1e-9)
+
+    def test_dashboard_writes_html_without_error(self, ma_pipeline: dict) -> None:
+        p = ma_pipeline
         with tempfile.TemporaryDirectory() as tmp:
             path = build_dashboard(
-                self.result,
+                p["result"],
                 output_path=Path(tmp) / "test_ma.html",
                 strategy_name_override="MA (integration test)",
-                benchmark=bm,
-                price_data=self.data["close"],
+                benchmark=p["benchmark"],
+                price_data=p["data"]["close"],
             )
             assert path.exists()
             html = path.read_text(encoding="utf-8")
-            # Self-contained: must embed Plotly JS
             assert "plotly" in html.lower()
-            # Must contain strategy name
             assert "MA" in html
-            # Must not be trivially empty
             assert len(html) > 50_000, f"Dashboard HTML suspiciously small: {len(html)} chars"
 
-    def test_dashboard_html_is_self_contained(self) -> None:
-        """Dashboard must not reference external CDN resources."""
-        bm = compute_benchmark(self.result, self.data, execution=self.exec)
+    def test_dashboard_html_is_self_contained(self, ma_pipeline: dict) -> None:
+        """Dashboard must not load scripts from external CDN.
+
+        The embedded Plotly JS bundle contains the string 'cdn.plot.ly' as a
+        URL used internally for topojson data - this is fine and expected.
+        What we are testing is that Plotly itself is embedded (not loaded via
+        a <script src="..."> tag pointing to a CDN), so the dashboard works
+        offline.
+
+        The correct check: no <script src="...cdn..."> tag exists in the HTML.
+        Searching for bare 'cdn.plot.ly' would produce a false failure because
+        that string appears inside the embedded JS bundle.
+        """
+        p = ma_pipeline
         with tempfile.TemporaryDirectory() as tmp:
             path = build_dashboard(
-                self.result,
+                p["result"],
                 output_path=Path(tmp) / "test_ma_cdn.html",
-                benchmark=bm,
-                price_data=self.data["close"],
+                benchmark=p["benchmark"],
+                price_data=p["data"]["close"],
             )
             html = path.read_text(encoding="utf-8")
-            # cdn.plot.ly or similar would break offline use
-            assert "cdn.plot.ly" not in html, "Dashboard loads Plotly from CDN"
-            assert "cdnjs.cloudflare.com" not in html, "Dashboard loads from cloudflare CDN"
+            # Must not load Plotly or any other resource from external CDN.
+            # These patterns would indicate a <script src="..."> dependency.
+            assert 'src="https://cdn.plot.ly' not in html, (
+                "Dashboard loads Plotly from cdn.plot.ly via <script src>"
+            )
+            assert 'src="https://cdnjs.cloudflare.com' not in html, (
+                "Dashboard loads a resource from cloudflare CDN"
+            )
+            # Must include the Plotly bundle inline.
+            assert "var Plotly" in html or "window.Plotly" in html or "plotly.js" in html.lower(), (
+                "Dashboard does not appear to embed Plotly JS inline"
+            )
 
-    def test_window_results_span_correct_date_range(self) -> None:
-        """Test windows must not overlap the training period."""
-        for w in self.result.window_results:
+    def test_window_results_span_correct_date_range(
+        self, ma_pipeline: dict
+    ) -> None:
+        for w in ma_pipeline["result"].window_results:
             assert w.test_start > w.train_end, (
                 f"Test start {w.test_start} not after train end {w.train_end}"
             )
             assert w.test_end >= w.test_start
 
-    def test_no_negative_portfolio_values(self) -> None:
+    def test_no_negative_portfolio_values(self, ma_pipeline: dict) -> None:
         """Portfolio value must never go negative (no leverage)."""
-        for w in self.result.window_results:
+        for w in ma_pipeline["result"].window_results:
             pv = w.simulation_result.portfolio_values
             if pv is not None:
-                assert (pv >= 0).all(), f"Negative portfolio value in window {w.test_start}"
+                assert (pv >= 0).all(), (
+                    f"Negative portfolio value in window {w.test_start}"
+                )
 
-    def test_flat_cash_windows_in_valid_windows(self) -> None:
-        """All windows (including flat-cash) must appear in valid_windows."""
-        assert len(self.result.valid_windows) == len(self.result.window_results)
+    def test_flat_cash_windows_in_valid_windows(self, ma_pipeline: dict) -> None:
+        """All windows including flat-cash must appear in valid_windows."""
+        r = ma_pipeline["result"]
+        assert len(r.valid_windows) == len(r.window_results)
 
+
+# ---------------------------------------------------------------------------
+# Full pipeline: Kalman filter strategy
+# ---------------------------------------------------------------------------
 
 class TestFullPipelineKalman:
     """Kalman Filter strategy: full pipeline integration."""
 
-    def test_kalman_full_pipeline(self) -> None:
-        data = _make_trending_data(n=756, seed=1)
-        exec_cfg = _zero_friction()
+    def test_returns_backtest_result(self, kalman_pipeline: dict) -> None:
+        assert isinstance(kalman_pipeline["result"], BacktestResult)
 
-        result = walk_forward(
-            data, KalmanFilterStrategy(),
-            training_window_years=1,
-            testing_window_years=1,
-            execution=exec_cfg,
-            bootstrap_seed=42,
-        )
+    def test_has_windows(self, kalman_pipeline: dict) -> None:
+        assert len(kalman_pipeline["result"].window_results) > 0
 
-        assert isinstance(result, BacktestResult)
-        assert len(result.window_results) > 0
+    def test_rc_p_is_nan_no_candidate_grid(self, kalman_pipeline: dict) -> None:
+        """Kalman has no parameter grid → RC p should be NaN, not raise."""
+        assert math.isnan(
+            kalman_pipeline["result"].summary_metrics.reality_check_p_value
+        ), "Kalman has no candidate grid; RC p should be NaN"
 
-        # Kalman has no parameter grid → RC p should be NaN
-        assert math.isnan(result.summary_metrics.reality_check_p_value), (
-            "Kalman has no candidate grid; RC p should be NaN"
-        )
-
-        bm = compute_benchmark(result, data, execution=exec_cfg)
-        assert isinstance(bm, BenchmarkResult)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = build_dashboard(
-                result,
-                output_path=Path(tmp) / "test_kalman.html",
-                benchmark=bm,
-                price_data=data["close"],
-            )
-            assert path.exists()
-            assert len(path.read_text(encoding="utf-8")) > 50_000
-
-    def test_kalman_active_params_populated(self) -> None:
-        """Every Kalman window must record Q, R, and log-likelihood."""
-        data = _make_trending_data(n=756, seed=2)
-        result = walk_forward(
-            data, KalmanFilterStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=_zero_friction(), bootstrap_seed=42,
-        )
-        for w in result.window_results:
+    def test_active_params_populated(self, kalman_pipeline: dict) -> None:
+        """Every Kalman window must record Q, R (MLE-fitted noise variances)."""
+        for w in kalman_pipeline["result"].window_results:
             params = w.active_params
             assert "q" in params and "r" in params, (
                 f"Window {w.test_start}: missing q or r in active_params: {params}"
             )
             assert float(params["q"]) > 0 and float(params["r"]) > 0
 
+    def test_dashboard_writes_html(self, kalman_pipeline: dict) -> None:
+        p = kalman_pipeline
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_dashboard(
+                p["result"],
+                output_path=Path(tmp) / "test_kalman.html",
+                benchmark=p["benchmark"],
+                price_data=p["data"]["close"],
+            )
+            assert path.exists()
+            assert len(path.read_text(encoding="utf-8")) > 50_000
+
+    def test_dashboard_param_evolution_uses_price_data(
+        self, kalman_pipeline: dict
+    ) -> None:
+        """Dashboard parameter evolution panel must render without error.
+
+        Kalman's param_evolution_spec() returns Q/R SNR entries, so the
+        parameter evolution panel should contain recognisable Kalman labels.
+        This test guards against the dashboard falling back silently to an
+        equity-only panel when param_evolution_spec is populated.
+        """
+        p = kalman_pipeline
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_dashboard(
+                p["result"],
+                output_path=Path(tmp) / "test_param_evo.html",
+                benchmark=p["benchmark"],
+                price_data=p["data"]["close"],
+            )
+            html = path.read_text(encoding="utf-8")
+            assert "Q/R" in html or "signal" in html.lower() or "snr" in html.lower()
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline: Momentum strategy
+# ---------------------------------------------------------------------------
 
 class TestFullPipelineMomentum:
     """Momentum strategy: full pipeline integration."""
 
-    def test_momentum_full_pipeline(self) -> None:
-        data = _make_trending_data(n=756, seed=3)
-        exec_cfg = _zero_friction()
+    def test_returns_backtest_result(self, momentum_pipeline: dict) -> None:
+        assert isinstance(momentum_pipeline["result"], BacktestResult)
 
-        result = walk_forward(
-            data, MomentumStrategy(),
-            training_window_years=1,
-            testing_window_years=1,
-            execution=exec_cfg,
-            bootstrap_seed=42,
+    def test_rc_p_is_finite(self, momentum_pipeline: dict) -> None:
+        """Momentum has a lookback grid → RC p must be finite."""
+        assert not math.isnan(
+            momentum_pipeline["result"].summary_metrics.reality_check_p_value
         )
 
-        assert isinstance(result, BacktestResult)
-        # Momentum has a candidate grid → RC p should be finite
-        assert not math.isnan(result.summary_metrics.reality_check_p_value)
-
-        bm = compute_benchmark(result, data, execution=exec_cfg)
+    def test_dashboard_writes_html(self, momentum_pipeline: dict) -> None:
+        p = momentum_pipeline
         with tempfile.TemporaryDirectory() as tmp:
             path = build_dashboard(
-                result,
+                p["result"],
                 output_path=Path(tmp) / "test_momentum.html",
-                benchmark=bm,
-                price_data=data["close"],
+                benchmark=p["benchmark"],
+                price_data=p["data"]["close"],
             )
             assert path.exists()
 
@@ -257,128 +366,103 @@ class TestFullPipelineMomentum:
 # Cross-component consistency
 # ---------------------------------------------------------------------------
 
-
 class TestCrossComponentConsistency:
-    """Verify that outputs from one component are consistent with inputs to another."""
+    """Verify outputs from one component are consistent with inputs to another.
 
-    def _run(self, seed: int = 10) -> tuple[BacktestResult, BenchmarkResult, pd.DataFrame]:
-        data = _make_trending_data(seed=seed)
-        exec_cfg = _zero_friction()
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=exec_cfg, bootstrap_seed=42,
-        )
-        bm = compute_benchmark(result, data, execution=exec_cfg)
-        return result, bm, data
+    All tests share a single walk_forward result via cross_component_pipeline.
+    Previously _run() was called independently for each test - 6 redundant calls.
+    """
 
-    def test_benchmark_window_count_matches_result(self) -> None:
-        result, bm, _ = self._run()
-        assert len(bm.per_window_benchmark_sharpes) == len(result.valid_windows)
+    def test_benchmark_window_count_matches_result(
+        self, cross_component_pipeline: dict
+    ) -> None:
+        r, bm = cross_component_pipeline["result"], cross_component_pipeline["benchmark"]
+        assert len(bm.per_window_benchmark_sharpes) == len(r.valid_windows)
 
-    def test_benchmark_beats_fraction_is_consistent(self) -> None:
-        """strategy_beats_benchmark_fraction must match manual count."""
-        result, bm, _ = self._run()
-        strat_sharpes = [w.metrics_result.sharpe_ratio for w in result.valid_windows]
+    def test_benchmark_beats_fraction_is_consistent(
+        self, cross_component_pipeline: dict
+    ) -> None:
+        """strategy_beats_benchmark_fraction must match a manual per-window count."""
+        r, bm = cross_component_pipeline["result"], cross_component_pipeline["benchmark"]
+        strat_sharpes = [w.metrics_result.sharpe_ratio for w in r.valid_windows]
         bm_sharpes = bm.per_window_benchmark_sharpes
-        manual_fraction = sum(
-            s > b for s, b in zip(strat_sharpes, bm_sharpes)
-        ) / len(strat_sharpes)
-        assert math.isclose(manual_fraction, bm.strategy_beats_benchmark_fraction, rel_tol=1e-9)
+        manual = sum(s > b for s, b in zip(strat_sharpes, bm_sharpes)) / len(strat_sharpes)
+        assert math.isclose(manual, bm.strategy_beats_benchmark_fraction, rel_tol=1e-9)
 
-    def test_window_dates_are_non_overlapping(self) -> None:
-        """Test windows must not overlap each other."""
-        result, _, _ = self._run()
-        windows = sorted(result.valid_windows, key=lambda w: w.test_start)
+    def test_window_dates_are_non_overlapping(
+        self, cross_component_pipeline: dict
+    ) -> None:
+        r = cross_component_pipeline["result"]
+        windows = sorted(r.valid_windows, key=lambda w: w.test_start)
         for i in range(1, len(windows)):
             assert windows[i].test_start > windows[i - 1].test_end, (
                 f"Window {i} test_start {windows[i].test_start} overlaps "
                 f"window {i-1} test_end {windows[i-1].test_end}"
             )
 
-    def test_portfolio_values_start_near_initial_capital(self) -> None:
+    def test_portfolio_values_start_near_initial_capital(
+        self, cross_component_pipeline: dict
+    ) -> None:
         """First portfolio value must equal INITIAL_PORTFOLIO_VALUE (no trades yet)."""
-        result, _, _ = self._run()
-        for w in result.valid_windows:
+        for w in cross_component_pipeline["result"].valid_windows:
             pv = w.simulation_result.portfolio_values
             if pv is not None and len(pv) > 0:
                 assert math.isclose(pv.iloc[0], INITIAL_PORTFOLIO_VALUE, rel_tol=0.01), (
-                    f"First bar portfolio value {pv.iloc[0]} far from "
+                    f"First bar portfolio {pv.iloc[0]} far from "
                     f"initial capital {INITIAL_PORTFOLIO_VALUE}"
                 )
 
-    def test_trade_pnl_consistent_with_portfolio(self) -> None:
-        """Total P&L across trades must approximately equal final-minus-initial portfolio value."""
-        result, _, _ = self._run()
-        for w in result.valid_windows:
+    def test_trade_pnl_consistent_with_portfolio(
+        self, cross_component_pipeline: dict
+    ) -> None:
+        """Total P&L across trades must approximately equal final−initial portfolio value."""
+        for w in cross_component_pipeline["result"].valid_windows:
             trades = w.simulation_result.trades
             pv = w.simulation_result.portfolio_values
             if not trades or pv is None or len(pv) < 2:
                 continue
             total_pnl = sum(t.pnl for t in trades)
             pv_change = float(pv.iloc[-1] - pv.iloc[0])
-            # Allow 1% tolerance for rounding and the cost model
             assert math.isclose(total_pnl, pv_change, rel_tol=0.02), (
                 f"Sum of trade P&L ({total_pnl:.2f}) inconsistent with "
                 f"portfolio change ({pv_change:.2f})"
             )
 
-    def test_summary_sharpe_is_mean_of_window_sharpes(self) -> None:
-        """Summary Sharpe must equal the mean of finite per-window Sharpes."""
-        result, _, _ = self._run()
+    def test_summary_sharpe_is_mean_of_window_sharpes(
+        self, cross_component_pipeline: dict
+    ) -> None:
+        r = cross_component_pipeline["result"]
         window_sharpes = [
-            w.metrics_result.sharpe_ratio for w in result.valid_windows
+            w.metrics_result.sharpe_ratio for w in r.valid_windows
             if not math.isnan(w.metrics_result.sharpe_ratio)
             and abs(w.metrics_result.sharpe_ratio) != float("inf")
         ]
         expected = float(np.mean(window_sharpes))
-        assert math.isclose(expected, result.summary_metrics.sharpe_ratio, rel_tol=1e-9)
-
-    def test_dashboard_param_evolution_uses_price_data(self) -> None:
-        """Dashboard must not produce different BH curves in the param and equity panels.
-
-        Before the fix, _add_param_evolution fallback called _add_cumulative_benchmark
-        without price_data, producing an inconsistent BH curve. This test verifies
-        the fixed code path: price_data is forwarded to the fallback.
-        """
-        # Use Kalman (has param evolution) to exercise the normal path,
-        # and verify no exception is raised when price_data is passed.
-        data = _make_trending_data(seed=5)
-        result = walk_forward(
-            data, KalmanFilterStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=_zero_friction(), bootstrap_seed=42,
-        )
-        bm = compute_benchmark(result, data, execution=_zero_friction())
-        with tempfile.TemporaryDirectory() as tmp:
-            path = build_dashboard(
-                result,
-                output_path=Path(tmp) / "test_param_evo.html",
-                benchmark=bm,
-                price_data=data["close"],   # must be passed through to param panel
-            )
-            html = path.read_text(encoding="utf-8")
-            # The parameter evolution panel should show up for Kalman
-            assert "Q/R" in html or "signal" in html.lower() or "snr" in html.lower()
+        assert math.isclose(expected, r.summary_metrics.sharpe_ratio, rel_tol=1e-9)
 
 
 # ---------------------------------------------------------------------------
-# Edge cases that span multiple components
+# Edge cases spanning multiple components
 # ---------------------------------------------------------------------------
-
 
 class TestPipelineEdgeCases:
-    """Edge cases that only surface through the full pipeline."""
+    """Edge cases that only surface through the full pipeline.
+
+    These tests each exercise distinct behaviour and cannot share a result -
+    each one uses a different data shape, strategy config, or execution config.
+    """
 
     def test_single_window_pipeline_completes(self) -> None:
         """Minimum viable dataset: exactly one train + one test window."""
-        # 2 years of data → exactly one 1-year train + 1-year test window
         n = 2 * ANNUALISATION_FACTOR + 10
         dates = pd.date_range("2020-01-01", periods=n, freq="B")
         t = np.arange(n, dtype=float)
         close = 100.0 + 0.03 * t + 5.0 * np.sin(2 * np.pi * t / 60)
-        data = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995}, index=dates)
-
+        data = pd.DataFrame({
+            "close": close,
+            "high": close * 1.005,
+            "low": close * 0.995,
+        }, index=dates)
         result = walk_forward(
             data, MovingAverageStrategy(),
             training_window_years=1, testing_window_years=1,
@@ -392,10 +476,11 @@ class TestPipelineEdgeCases:
         """Fully flat price data produces zero trades → walk_forward must raise."""
         n = 756
         dates = pd.date_range("2020-01-01", periods=n, freq="B")
-        data = pd.DataFrame(
-            {"close": np.full(n, 100.0), "high": np.full(n, 100.5), "low": np.full(n, 99.5)},
-            index=dates,
-        )
+        data = pd.DataFrame({
+            "close": np.full(n, 100.0),
+            "high": np.full(n, 100.5),
+            "low": np.full(n, 99.5),
+        }, index=dates)
         with pytest.raises(ValueError, match="zero trades"):
             walk_forward(
                 data, MovingAverageStrategy(),
@@ -415,7 +500,6 @@ class TestPipelineEdgeCases:
             path = build_dashboard(
                 result,
                 output_path=Path(tmp) / "no_bm.html",
-                # No benchmark kwarg
                 price_data=data["close"],
             )
             assert path.exists()
@@ -436,38 +520,31 @@ class TestPipelineEdgeCases:
         )
         assert isinstance(result, BacktestResult)
         bm = compute_benchmark(result, data, execution=exec_cfg)
-        # Slippage cost applied to benchmark must reduce its Sharpe vs zero-cost
         bm_no_cost = compute_benchmark(result, data, execution=_zero_friction())
-        # This is not guaranteed in all cases but holds for our synthetic data
-        # (slippage reduces benchmark return on entry/exit)
-        assert bm.benchmark_sharpe <= bm_no_cost.benchmark_sharpe + 0.5, (
-            "Benchmark Sharpe with costs should be <= without costs (within tolerance)"
-        )
+        assert bm.benchmark_sharpe <= bm_no_cost.benchmark_sharpe + 0.5
 
     def test_rc_p_and_fisher_p_cover_same_windows(self) -> None:
-        """RC p must be computable and both statistics cover all windows.
+        """RC p must be computable even when some windows are flat-cash.
 
         Before the RC flat-cash parity fix, flat-cash windows contributed to
-        Fisher (p=1.0) but were excluded from the RC candidate matrix. This
-        caused the two statistics to test different hypotheses.
+        Fisher (p=1.0) but were excluded from the RC candidate matrix, causing
+        the two statistics to test different hypotheses over different windows.
         """
-        # Use slow oscillation to guarantee some flat-cash windows
         n = 1260
         dates = pd.date_range("2015-01-01", periods=n, freq="B")
         t = np.arange(n, dtype=float)
         close = 100.0 + 15.0 * np.sin(2 * np.pi * t / 750.0)
         data = pd.DataFrame({"close": close}, index=dates)
-
         result = walk_forward(
             data, MovingAverageStrategy(),
             training_window_years=1, testing_window_years=1,
             execution=_zero_friction(), bootstrap_seed=42,
         )
-
-        assert result.flat_cash_window_count > 0, "Expected flat-cash windows for slow oscillation"
+        assert result.flat_cash_window_count > 0, (
+            "Expected flat-cash windows for slow oscillation data"
+        )
         m = result.summary_metrics
-
-        assert not math.isnan(m.combined_p_value), "Fisher p must be computable"
+        assert not math.isnan(m.combined_p_value)
         assert not math.isnan(m.reality_check_p_value), (
             "RC p must be computable even with flat-cash windows (parity fix)"
         )

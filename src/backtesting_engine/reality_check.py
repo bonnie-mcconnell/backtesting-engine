@@ -4,64 +4,34 @@ White's Reality Check for data snooping bias correction.
 Reference: White, H. (2000). "A Reality Check for Data Snooping."
            Econometrica, 68(5), 1097–1126.
 
-The problem
------------
-When you search over a universe of strategies (or parameter combinations)
-and report the best performer, the naive p-value from a significance test
-on that best performer is misleading. Even if no strategy has genuine edge,
-the best of k strategies will appear to have a low p-value by chance - the
-classical multiple comparisons problem.
-
-White's Reality Check corrects for this. The null hypothesis is:
+When you search over a universe of strategies and report the best performer,
+the naive p-value on that result is misleading. Even if no strategy has genuine
+edge, the best of k strategies will appear significant by chance. White's RC
+corrects for this. The null hypothesis is:
 
     H₀: No strategy in the universe has performance superior to a benchmark.
 
-White (2000) uses zero return (cash) as the benchmark, which is what this
-implementation does. This means a small RC p-value indicates at least one
-strategy beats cash - not necessarily that it beats buy-and-hold.
-
-For equity trend-following strategies that are frequently in cash between
-signals, this is the natural null: does the strategy add value over doing
-nothing? If you want to test against buy-and-hold, you would subtract the
-buy-and-hold return from each candidate's return series before passing to
-this function. That test is stricter and more appropriate for evaluating
-active management. See benchmark.py for the buy-and-hold comparison.
+White (2000) uses zero return (cash) as the benchmark. A small RC p-value means
+at least one strategy beats cash, not necessarily buy-and-hold. For trend-following
+strategies frequently in cash, this is the natural null. To test against buy-and-hold,
+subtract B&H returns from each candidate's series before calling this function.
+See benchmark.py for the buy-and-hold comparison.
 
 The test statistic is the maximum mean excess return across all k strategies.
 The p-value is the fraction of bootstrap replications in which the centred
 maximum exceeds the observed maximum.
 
-Implementation
---------------
-We use the stationary bootstrap (Politis & Romano, 1994) rather than the
-fixed block-length bootstrap. The stationary bootstrap draws block lengths
-geometrically at random with mean block length b, which produces a
-stationary null distribution. This avoids the bias that arises from fixed
-block lengths when the series has heterogeneous autocorrelation.
+We use the stationary bootstrap (Politis & Romano, 1994): block lengths drawn
+geometrically with mean b = sqrt(T), same seed as the rest of the engine.
+During walk-forward we store TEST-period returns for every grid candidate, not
+just the winner. After walk-forward completes, RC runs over the full candidate
+universe across all windows to give the data-snooping corrected p-value.
 
-The mean block length b = sqrt(T) is White's recommendation. We use the
-same seed as the rest of the engine for reproducibility.
+  rc_p_value < 0.05: statistically significant after data-snooping correction.
+  rc_p_value >= 0.05: performance is consistent with having searched many candidates.
 
-How we integrate it
--------------------
-During walk-forward training, we store the returns of EVERY candidate
-strategy evaluated during grid search, not just the winner. After
-walk-forward completes, we run the Reality Check over the full universe
-of candidate returns across all test windows.
-
-This gives the data-snooping corrected p-value: the probability that the
-best observed strategy performance arose by chance when we searched over
-the full parameter grid.
-
-Interpretation
---------------
-  rc_p_value < 0.05 → statistically significant after data-snooping correction.
-  rc_p_value ≥ 0.05 → performance is consistent with data snooping; no
-                       evidence of genuine edge in the search universe.
-
-Note: the corrected p-value is always ≥ the naive p-value. If the naive
-test rejects but the Reality Check does not, you have a data snooping
-problem - the apparent significance came from searching, not from edge.
+The corrected p-value is always >= the naive p-value. If the naive test rejects
+but RC does not, the apparent significance came from searching, not from edge.
 """
 
 from __future__ import annotations
@@ -75,7 +45,7 @@ from backtesting_engine.config import BLOCK_BOOTSTRAP_SEED, N_PERMUTATIONS
 
 def white_reality_check(
     candidate_returns: np.ndarray,
-    n_bootstrap: int = N_PERMUTATIONS,
+    n_bootstrap: int | None = None,
     seed: int = BLOCK_BOOTSTRAP_SEED,
 ) -> float:
     """
@@ -86,7 +56,11 @@ def white_reality_check(
             time periods (days) and k is the number of candidate strategies.
             Each column is the daily return series of one candidate.
             The first column is assumed to be the best (selected) strategy.
-        n_bootstrap: Number of stationary bootstrap replications.
+        n_bootstrap: Number of stationary bootstrap replications. Defaults to
+            N_PERMUTATIONS (read at call time, not at import time). Pass an
+            explicit value to override. The test suite patches the module-level
+            N_PERMUTATIONS to 200 via conftest.py; using None as the default
+            ensures that patch takes effect.
         seed: Random seed for reproducibility.
 
     Returns:
@@ -97,6 +71,11 @@ def white_reality_check(
         ValueError: If candidate_returns has fewer than 2 dimensions or
                     fewer than 1 strategy.
     """
+    # Read N_PERMUTATIONS at call time so the test suite can patch it via
+    # conftest.py. If n_bootstrap=N_PERMUTATIONS were a default argument,
+    # Python would capture the value at function-definition time (import),
+    # before conftest.py's session fixture runs.
+    n_iters = n_bootstrap if n_bootstrap is not None else N_PERMUTATIONS
     if candidate_returns.ndim != 2:
         raise ValueError(
             f"candidate_returns must be 2D (T × k), got shape {candidate_returns.shape}."
@@ -121,7 +100,7 @@ def white_reality_check(
     p = 1.0 / b   # geometric parameter → mean block length = b
 
     count_exceeds = 0
-    for _ in range(n_bootstrap):
+    for _ in range(n_iters):
         # Draw one stationary bootstrap resample of the return matrix.
         resampled = _stationary_bootstrap_resample(candidate_returns, p, n_periods, rng)
 
@@ -147,7 +126,7 @@ def white_reality_check(
         if boot_stat >= observed_max:
             count_exceeds += 1
 
-    return float(count_exceeds / n_bootstrap)
+    return float(count_exceeds / n_iters)
 
 
 def _stationary_bootstrap_resample(

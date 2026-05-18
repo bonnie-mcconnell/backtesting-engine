@@ -1,7 +1,7 @@
 """
-Tests for fixes applied in the v0.6.x → v0.7.0 pass.
+Tests for fixes applied in the v0.6.x → v0.8.0 pass.
 
-Covers every correctness issue identified in the final audit:
+Covers every correctness issue identified across the audit and fix passes:
   1. _fmt_metric no longer crashes with infinite values
   2. _min_rows uses runtime train/test years, not module-level defaults
   3. --end date is inclusive (yfinance offset applied internally)
@@ -19,6 +19,8 @@ import pathlib
 
 import numpy as np
 import pandas as pd
+import pytest
+from helpers import make_oscillating_data
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,15 +36,14 @@ def _make_ohlcv(n: int, with_high_low: bool = True) -> pd.DataFrame:
 
 
 def _make_oscillating(n: int = 504, with_high_low: bool = True) -> pd.DataFrame:
-    """Oscillating price series that generates MA crossover signals."""
-    dates = pd.date_range("2010-01-01", periods=n, freq="B")
-    t = np.arange(n)
-    close = 100.0 + 10.0 * np.sin(2 * np.pi * t / 60) + t * 0.01
-    df = pd.DataFrame({"close": close}, index=dates)
-    if with_high_low:
-        df["high"] = close * 1.005
-        df["low"] = close * 0.995
-    return df
+    """Thin wrapper around make_oscillating_data for backward compat within this module.
+
+    test_fixes.py previously defined its own oscillating data generator that
+    was a near-duplicate of helpers.make_oscillating_data. This wrapper preserves
+    all call sites in this module while routing through the single canonical
+    implementation in helpers.py, eliminating the duplication.
+    """
+    return make_oscillating_data(n, with_high_low=with_high_low)
 
 
 # ── 1. _fmt_metric crash ──────────────────────────────────────────────────────
@@ -147,42 +148,63 @@ class TestEndDateInclusive:
 
 # ── 4. RC flat-cash parity ────────────────────────────────────────────────────
 
+def _make_mixed_window_data_for_flat_cash() -> pd.DataFrame:
+    """Price series that produces some flat-cash AND some trading windows.
+
+    A very slow sine wave (period=750 bars) means individual 252-bar test
+    windows are often monotone (no MA crossover -> flat-cash), but the full
+    5-year dataset has enough trend reversals that at least 2 windows trade.
+    This avoids triggering the zero-total-trades defensive guard.
+
+    Module-level (not a method) so the pytest fixture below can reference it
+    without instantiating TestRCFlatCashParity. The fixture result is cached
+    at class scope so walk_forward runs exactly once for all three tests.
+    """
+    n = 1260
+    dates = pd.date_range("2010-01-01", periods=n, freq="B")
+    t = np.arange(n, dtype=float)
+    close = 100.0 + 15.0 * np.sin(2 * np.pi * t / 750.0)
+    return pd.DataFrame({"close": close}, index=dates)
+
+
+@pytest.fixture(scope="class")
+def flat_cash_result():
+    """
+    Single walk_forward result shared across all TestRCFlatCashParity tests.
+
+    scope="class" means this fixture is computed once when the first test in
+    the class runs, then reused for all subsequent tests in the class.
+    Without sharing, _run_walk_forward_with_flat_cash() was called 3× in
+    separate method calls, each running the full MA grid search + bootstrap.
+    With a class-scoped fixture, the expensive computation runs exactly once.
+    """
+    from backtesting_engine.execution import ExecutionConfig
+    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+    from backtesting_engine.walk_forward import walk_forward
+
+    return walk_forward(
+        _make_mixed_window_data_for_flat_cash(),
+        MovingAverageStrategy(),
+        training_window_years=1,
+        testing_window_years=1,
+        execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+    )
+
+
 class TestRCFlatCashParity:
     """
     Flat-cash windows must contribute to the RC candidate matrix just as they
     contribute p=1.0 to Fisher's combined p. Without this, Fisher and RC test
     different hypotheses over different windows.
+
+    The walk_forward result is shared via the flat_cash_result fixture (class
+    scope) so the expensive MA grid search + bootstrap runs exactly once for
+    all three tests in this class, not three times.
     """
 
-    def _make_mixed_window_data(self) -> pd.DataFrame:
-        """Price series that produces some flat-cash AND some trading windows.
-
-        A very slow sine wave (period=750 bars) means individual 252-bar test
-        windows are often monotone (no MA crossover -> flat-cash), but the full
-        5-year dataset has enough trend reversals that at least 2 windows trade.
-        This avoids triggering the zero-total-trades defensive guard.
-        """
-        n = 1260
-        dates = pd.date_range("2010-01-01", periods=n, freq="B")
-        t = np.arange(n, dtype=float)
-        close = 100.0 + 15.0 * np.sin(2 * np.pi * t / 750.0)
-        return pd.DataFrame({"close": close}, index=dates)
-
-    def _run_walk_forward_with_flat_cash(self):
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
-        strategy = MovingAverageStrategy()
-        return walk_forward(
-            self._make_mixed_window_data(), strategy,
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
-
-    def test_flat_cash_windows_are_valid_windows(self) -> None:
+    def test_flat_cash_windows_are_valid_windows(self, flat_cash_result) -> None:
         """Flat-cash windows must be included in valid_windows with skipped=False."""
-        result = self._run_walk_forward_with_flat_cash()
+        result = flat_cash_result
         assert result.flat_cash_window_count > 0, (
             "Expected at least one flat-cash window with slow-oscillation data. "
             "Verify the sine period is long enough relative to the test window."
@@ -191,7 +213,7 @@ class TestRCFlatCashParity:
             "All windows (including flat-cash) must appear in valid_windows."
         )
 
-    def test_rc_p_is_not_nan_when_strategy_has_candidates(self) -> None:
+    def test_rc_p_is_not_nan_when_strategy_has_candidates(self, flat_cash_result) -> None:
         """RC p must be computable even when some windows are flat-cash.
 
         Before the fix: flat-cash windows skipped RC candidate collection but
@@ -199,8 +221,7 @@ class TestRCFlatCashParity:
         After the fix: flat-cash windows contribute zero-return arrays to the
         RC matrix so both statistics test the same set of windows.
         """
-        result = self._run_walk_forward_with_flat_cash()
-        rc_p = result.summary_metrics.reality_check_p_value
+        rc_p = flat_cash_result.summary_metrics.reality_check_p_value
         assert not math.isnan(rc_p), (
             "RC p is NaN despite strategy having candidates. "
             "Flat-cash windows must contribute zero-return arrays to RC matrix "
@@ -209,7 +230,12 @@ class TestRCFlatCashParity:
         assert 0.0 <= rc_p <= 1.0, f"RC p-value out of [0,1]: {rc_p}"
 
     def test_fisher_and_rc_cover_same_number_of_windows(self) -> None:
-        """Fisher p uses all windows including flat-cash; RC must too."""
+        """Fisher p uses all windows including flat-cash; RC must too.
+
+        This test uses its own walk_forward call (not the shared fixture) because
+        it intentionally uses a different dataset (_make_oscillating with high/low)
+        to verify the property holds under a different data regime.
+        """
         from backtesting_engine.execution import ExecutionConfig
         from backtesting_engine.strategy.moving_average import MovingAverageStrategy
         from backtesting_engine.walk_forward import walk_forward
@@ -295,6 +321,29 @@ class TestRCBoundaryCarryOver:
 
 # ── 6. Benchmark slippage parity ──────────────────────────────────────────────
 
+@pytest.fixture(scope="class")
+def slippage_parity_data():
+    """
+    Shared walk_forward result for TestBenchmarkSlippageParity.
+
+    The test_compute_benchmark_passes_slippage_to_bh test needs a walk_forward
+    result to call compute_benchmark on. Using a class-scoped fixture avoids
+    running the full MA grid search once per test method.
+    """
+    from backtesting_engine.execution import ExecutionConfig
+    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+    from backtesting_engine.walk_forward import walk_forward
+
+    data = _make_oscillating(756, with_high_low=True)
+    exec_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.05, signal_delay=0)
+    result = walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=1, testing_window_years=1,
+        execution=exec_slip,
+    )
+    return data, result, exec_slip
+
+
 class TestBenchmarkSlippageParity:
     """
     The benchmark must apply the same slippage as the strategy.
@@ -336,22 +385,13 @@ class TestBenchmarkSlippageParity:
 
         np.testing.assert_allclose(returns_series, returns_df, rtol=1e-10)
 
-    def test_compute_benchmark_passes_slippage_to_bh(self) -> None:
+    def test_compute_benchmark_passes_slippage_to_bh(self, slippage_parity_data) -> None:
         """compute_benchmark must forward slippage from ExecutionConfig to BH returns."""
         from backtesting_engine.benchmark import compute_benchmark
         from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
 
-        data = _make_oscillating(756, with_high_low=True)
-        exec_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.05, signal_delay=0)
+        data, result, exec_slip = slippage_parity_data
         exec_no_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.0, signal_delay=0)
-
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=exec_slip,
-        )
 
         bm_with_slip = compute_benchmark(result, data, execution=exec_slip)
         bm_no_slip = compute_benchmark(result, data, execution=exec_no_slip)
@@ -364,58 +404,56 @@ class TestBenchmarkSlippageParity:
 
 # ── 7. BenchmarkResult per-window sharpes ────────────────────────────────────
 
+@pytest.fixture(scope="class")
+def per_window_sharpe_result():
+    """
+    walk_forward + compute_benchmark result shared across TestBenchmarkResultPerWindowSharpes.
+
+    scope="class": runs once for all three tests in the class, not once per test.
+    The MA grid search runs on each call to walk_forward; sharing avoids 3×
+    redundant executions of the same computation.
+    """
+    from backtesting_engine.benchmark import compute_benchmark
+    from backtesting_engine.execution import ExecutionConfig
+    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+    from backtesting_engine.walk_forward import walk_forward
+
+    data = _make_oscillating(756, with_high_low=True)
+    result = walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=1, testing_window_years=1,
+        execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+    )
+    bm = compute_benchmark(result, data)
+    return result, bm
+
+
 class TestBenchmarkResultPerWindowSharpes:
-    """BenchmarkResult must carry per_window_benchmark_sharpes."""
+    """BenchmarkResult must carry per_window_benchmark_sharpes.
 
-    def test_per_window_sharpes_populated(self) -> None:
-        from backtesting_engine.benchmark import compute_benchmark
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
+    All three tests share a single walk_forward result via the class-scoped
+    per_window_sharpe_result fixture. Without sharing, the MA grid search
+    ran independently for each test method.
+    """
 
-        data = _make_oscillating(756, with_high_low=True)
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
-        bm = compute_benchmark(result, data)
+    def test_per_window_sharpes_populated(self, per_window_sharpe_result) -> None:
+        result, bm = per_window_sharpe_result
         assert len(bm.per_window_benchmark_sharpes) == len(result.valid_windows), (
             "per_window_benchmark_sharpes must have one entry per valid window"
         )
 
-    def test_per_window_sharpes_mean_equals_benchmark_sharpe(self) -> None:
+    def test_per_window_sharpes_mean_equals_benchmark_sharpe(
+        self, per_window_sharpe_result
+    ) -> None:
         """Mean of per-window BH sharpes must equal benchmark_sharpe."""
-        from backtesting_engine.benchmark import compute_benchmark
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
-        data = _make_oscillating(756, with_high_low=True)
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
-        bm = compute_benchmark(result, data)
+        _, bm = per_window_sharpe_result
         mean_pw = float(np.mean(bm.per_window_benchmark_sharpes))
         assert math.isclose(mean_pw, bm.benchmark_sharpe, rel_tol=1e-9), (
             f"Mean of per-window sharpes {mean_pw:.6f} != benchmark_sharpe {bm.benchmark_sharpe:.6f}"
         )
 
-    def test_per_window_sharpes_are_all_finite(self) -> None:
-        from backtesting_engine.benchmark import compute_benchmark
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
-        data = _make_oscillating(756, with_high_low=True)
-        result = walk_forward(
-            data, MovingAverageStrategy(),
-            training_window_years=1, testing_window_years=1,
-            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
-        )
-        bm = compute_benchmark(result, data)
+    def test_per_window_sharpes_are_all_finite(self, per_window_sharpe_result) -> None:
+        _, bm = per_window_sharpe_result
         for i, s in enumerate(bm.per_window_benchmark_sharpes):
             assert math.isfinite(s), f"Window {i} benchmark Sharpe is not finite: {s}"
 

@@ -22,11 +22,14 @@ from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
 
-@pytest.fixture
+@pytest.fixture(scope="class")
 def small_result() -> tuple[BacktestResult, pd.DataFrame]:
     # with_high_low=True: the new ExecutionConfig default (slippage=0.05)
     # requires 'high' and 'low' columns. We use realistic defaults to mirror
     # exactly what main.py does, making this fixture a faithful integration test.
+    #
+    # scope="class": shared across all TestComputeBenchmark tests so walk_forward
+    # (which runs the MA grid search + bootstrap) executes once, not 8 times.
     data = make_oscillating_data(756, with_high_low=True)
     strategy = MovingAverageStrategy(short_window=20, long_window=50)
     from backtesting_engine.execution import ExecutionConfig

@@ -12,6 +12,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Hard wall: if tests genuinely take longer than 20 minutes, something is
+    # wrong with the test setup (e.g. N_PERMUTATIONS not patched, a test
+    # accidentally triggering a network download, or a hang in the Kalman MLE).
+    # The conftest.py session fixture patches N_PERMUTATIONS to 200 for tests;
+    # the full suite should complete in under 5 minutes on ubuntu-latest.
+    timeout-minutes: 20
 
     strategy:
       matrix:
@@ -44,6 +50,11 @@ jobs:
         # setting in pyproject.toml. Run `pytest -m network` locally or in a
         # scheduled job with live credentials to exercise the data layer against
         # real yfinance responses.
+        #
+        # N_PERMUTATIONS is patched to 200 by conftest.py for the test session
+        # (production value is 10,000). This is sufficient to verify statistical
+        # correctness properties (p-values in [0,1], directional response to
+        # drift, reproducibility) without spending 90+ minutes on Monte Carlo.
         run: poetry run pytest -v --tb=short
 
       - name: Verify public API importable
@@ -54,7 +65,7 @@ jobs:
               ExecutionConfig, build_dashboard, load_data, validate_data,
               BacktestResult, MetricsResult, cost_sensitivity_sweep,
               compute_benchmark, BenchmarkResult,
-              MomentumStrategy,
+              MomentumStrategy, run_multi_asset,
           )
           print('Public API: all imports OK')
           "

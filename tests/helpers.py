@@ -22,8 +22,9 @@ def make_oscillating_data(
     """
     Generate synthetic oscillating price data for testing.
 
-    Prices follow a sine wave (period = n/10π bars) with a slight upward
-    drift. The frequency is dense enough that multiple golden/death cross
+    Prices follow a sine wave with period = n/10 bars (derived from the
+    linspace endpoint of 20π: period = 2π / (20π/n) = n/10). With a slight
+    upward drift. The frequency is dense enough that multiple golden/death cross
     events occur in every 252-bar window regardless of where that window
     starts - making this suitable for walk-forward and signal-detection tests.
 

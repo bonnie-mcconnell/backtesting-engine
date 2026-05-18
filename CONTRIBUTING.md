@@ -61,22 +61,43 @@ test-period data - a mild look-ahead. The base class falls back to
 If you skip this, the Reality Check p-value is NaN - fine for parameter-free
 strategies, a problem if you ran a grid search and are reporting the best result.
 
-**Example: momentum strategy**
+**Example: fixed-parameter strategy (no grid search)**
 
 ```python
-class MomentumStrategy(BaseStrategy):
+class FixedMomentumStrategy(BaseStrategy):
+    """Momentum strategy with a fixed lookback - no parameter calibration."""
 
-    def __init__(self, lookback: int = 63) -> None:
+    def __init__(self, lookback: int = 90) -> None:
         self.lookback = lookback
 
-    def fit(self, train_data: pd.DataFrame) -> "MomentumStrategy":
-        return self  # no learned parameters
+    def fit(self, train_data: pd.DataFrame) -> "FixedMomentumStrategy":
+        # No parameters to calibrate - lookback is fixed at construction.
+        # For a strategy that grid-searches over multiple lookbacks, implement
+        # candidate_test_returns() to enable White's Reality Check.
+        return self
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
-        momentum = data["close"].pct_change(self.lookback)
+        close = data["close"]
+        momentum = close.pct_change(self.lookback)
         above_zero = (momentum > 0).astype(int)
+        # Diff converts position (0/1) to signal (-1/0/+1).
         return above_zero.diff().fillna(0).astype(int)
+
+    def context_window_size(self) -> int:
+        return self.lookback  # need lookback bars to warm up the momentum window
+
+    def active_params(self) -> dict[str, object]:
+        return {"lookback": self.lookback}
+
+    def format_params(self) -> str:
+        return f"MOM({self.lookback})"
 ```
+
+**Important**: If your strategy searches a parameter grid in `fit()`, you must
+also implement `candidate_test_returns()`. Without it, the Reality Check p-value
+will be `NaN`: the engine cannot correct for data snooping if it doesn't know
+what candidates were evaluated. See `MomentumStrategy` in `src/backtesting_engine/strategy/momentum.py`
+for a complete example with grid search and Reality Check support.
 
 ---
 
@@ -146,7 +167,7 @@ config ← models ← metrics / execution ← strategy ← walk_forward ← benc
                                                                   ← main
 ```
 
-Nothing in a lower layer imports from a higher one at runtime. One intentional exception: `execution.py` imports `BaseStrategy` under `TYPE_CHECKING` with `from __future__ import annotations`. At runtime this import is never evaluated, so there is no circular dependency. At type-check time, mypy sees the full type. The reason this guard is needed is that `strategy/__init__.py` re-exports from `execution.py`, which would create a genuine cycle if `execution.py` imported from `strategy/` unconditionally. `TYPE_CHECKING` is the correct resolution here - not a workaround, but the standard Python mechanism for exactly this pattern.
+Nothing in a lower layer imports from a higher one at runtime. One intentional exception: `execution.py` imports `BaseStrategy` under `TYPE_CHECKING` with `from __future__ import annotations` to avoid a circular import with `strategy/__init__.py`.
 
 ---
 

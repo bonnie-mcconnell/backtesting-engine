@@ -15,7 +15,7 @@ That result is the point. The framework is designed to make that kind of rigorou
 
 I wanted to understand why most published backtests are wrong. The specific problem I kept running into: a strategy looks profitable until you add transaction costs, or until you realise the parameter you optimised was selected from a grid of 20 candidates and you never corrected for that search. Both of these kill most retail strategies.
 
-The Kalman filter was the hardest part to get right. Fitting it by maximum likelihood in log-space with Nelder-Mead, then using a diffuse prior to handle the cold-start at each window boundary, took longer than everything else combined. The result is interesting: the Kalman SNR adapts across walk-forward windows in a way that does correspond to detectable regime shifts - it just doesn't translate into tradeable alpha after costs.
+The Kalman filter was the hardest part to get right. Fitting it by maximum likelihood in log-space with Nelder-Mead, then using a diffuse prior to handle the cold-start at each window boundary, took longer than everything else combined. The result is interesting: the Kalman SNR shifts noticeably across walk-forward windows in a pattern that appears correlated with documented equity market regime changes (2000–2002 dot-com, 2007–2009 financial crisis). Whether that correlation is structural or coincidental is an open question. It does not translate into tradeable alpha after costs, which is the honest answer.
 
 ---
 
@@ -34,6 +34,12 @@ Reproduce the exact README results (frozen to 2024-12-31):
 make run-frozen
 ```
 
+Test whether the null result holds across asset classes (SPY, QQQ, TLT, GLD):
+
+```bash
+make run-multi
+```
+
 Outputs `results/dashboard_ma.html`, `results/dashboard_kalman.html`, `results/dashboard_momentum.html`, `results/cost_sensitivity.html`. Open any in a browser - they are self-contained HTML with embedded Plotly JS, no server required.
 
 ---
@@ -50,10 +56,25 @@ backtesting-engine \
   --output-dir results/
 ```
 
+This produces `results/dashboard_ma.html`, `results/dashboard_kalman.html`, `results/dashboard_momentum.html`, and `results/cost_sensitivity.html`. Each dashboard is a self-contained HTML file (~4.5MB) with embedded Plotly JS. Open in any browser, no server required.
+
+**Dashboard panels (6 per strategy):**
+
+1. **Equity curve**: per-window portfolio values stitched together vs buy-and-hold benchmark across the full SPY history
+2. **Per-window Sharpe**: bar chart comparing strategy Sharpe vs benchmark Sharpe for each of the ~26 test windows, coloured green/red vs that window's benchmark (not the aggregate)
+3. **Rolling drawdown**: maximum drawdown at each bar across the full test period
+4. **Parameter evolution**: how calibrated parameters drift across windows (MA short/long windows, Kalman SNR, momentum lookback)
+5. **Returns distribution**: histogram of daily returns vs Normal fit
+6. **Trade diagnostics**: per-trade P&L, holding period distribution, win rate across windows
+
+The headline result for all three strategies is a Fisher combined p-value well above 0.05 and a Reality Check p-value similarly non-significant after multiple-comparison correction. The cost sensitivity sweep shows that at zero cost and zero slippage, some strategies look significant; the significance disappears as execution costs are raised toward the 0.1%/5% baseline, confirming that the apparent edge is mostly friction-dependent.
+
 The table below intentionally does not hardcode numbers. Hardcoded numbers become stale within weeks as data revisions accumulate, and a mismatch between the README and actual output is a credibility problem. Run the command and the dashboards will show every metric with full context.
 
-See [docs/reproducibility.md](docs/reproducibility.md) for environment details and
-[docs/performance.md](docs/performance.md) for expected runtimes.
+See [docs/reproducibility.md](docs/reproducibility.md) for environment details,
+[docs/methodology.md](docs/methodology.md) for statistical methodology,
+[docs/architecture.md](docs/architecture.md) for data flow and design decisions,
+and [docs/performance.md](docs/performance.md) for expected runtimes.
 
 ---
 
@@ -74,7 +95,8 @@ src/backtesting_engine/
 ├── reality_check.py         White's (2000) Reality Check
 ├── metrics.py               Sharpe, Sortino, Calmar, Omega, block bootstrap p
 ├── benchmark.py             Buy-and-hold comparison, Information Ratio, paired t-test
-├── simulator.py             Reference simulator (readable baseline)
+├── multi_asset.py           Cross-asset validation: same strategy across ticker universe
+├── simulator.py             Reference simulator (readable baseline, zero-friction)
 ├── models.py                Dataclasses: Trade, SimulationResult, WindowResult, etc.
 ├── dashboard.py             6-panel interactive Plotly dashboard
 ├── config.py                All constants in one place
@@ -160,18 +182,19 @@ backtesting-engine [options]
 ```bash
 make test     # full suite
 make check    # lint + typecheck + tests
+make run-multi  # cross-asset comparison (SPY, QQQ, TLT, GLD)
 ```
 
-Test coverage (396 tests) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, yfinance retry handling, and Windows UTF-8 portability.
+Test coverage (413 tests, `make test`) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, cross-asset validation (graceful ticker failure, result types, comparison table), `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, yfinance retry handling, and Windows UTF-8 portability.
 
 ---
 
 ## Known limitations
 
-- Single asset (SPY). Cross-asset robustness is untested.
+- Single-asset focus for the main CLI. `make run-multi` tests four asset classes (SPY, QQQ, TLT, GLD) but only with the MA crossover strategy, not Kalman or momentum. This is the primary scope limitation of this frozen version.
+- **Reality Check null is cash, not buy-and-hold.** White's RC tests whether the best strategy beats zero return. It does not test whether the strategy beats a passive buy-and-hold benchmark. A strategy can produce a low RC p-value while still underperforming B&H. The correct null for that question is to resample active returns (strategy minus B&H), which is not implemented here. This is the primary methodological gap in this frozen version.
 - Fisher combination is approximate because walk-forward windows are not fully independent.
-- Reality Check null is cash, not buy-and-hold. Significant under RC ≠ significant vs B&H.
-- Bootstrap block length is fixed at √n. Optimal length depends on autocorrelation structure.
+- Bootstrap block length is fixed at √n. Optimal length depends on autocorrelation structure (see Politis & White 2004 in References).
 - yfinance data can have revision errors the validator does not catch.
 
 Full discussion in [docs/methodology.md](docs/methodology.md).
@@ -180,13 +203,15 @@ Full discussion in [docs/methodology.md](docs/methodology.md).
 
 ## What I would do next
 
-The biggest gap is benchmark-relative Reality Check: resample active returns (strategy minus buy-and-hold) rather than raw returns. That directly tests whether the strategy adds value over passive - a stronger claim than beating cash.
+This project is frozen at v0.8.0. The items below are extensions that were scoped but not implemented. The first two overlap with Known Limitations above and are included here because they have a clear implementation path.
 
-The second gap is cross-asset validation. Running the same framework over a basket of ETFs (SPY, QQQ, EEM, EFA, TLT, GLD) would test whether the null result is specific to SPY or robust across asset classes.
+**Cross-asset validation** is partially implemented. `make run-multi` runs MA crossover on SPY, QQQ, TLT, and GLD and prints a comparison table. The obvious next step is running all three strategies across the full basket and surfacing the results in the dashboard, but it was not completed. If the null result holds across all four asset classes for all three strategies, that is a meaningfully stronger conclusion than the current single-strategy cross-asset check.
 
-The Kalman filter MLE is slow because it re-runs the full filter on every optimiser call. The EM algorithm would be faster and has a natural stopping criterion.
+**Benchmark-relative Reality Check** is the biggest methodological gap in the current implementation. The RC null is cash (zero return). The right null for an active equity strategy is buy-and-hold. Resampling active returns (strategy minus B&H) rather than raw returns would directly test whether the strategy adds value over passive. This would require restructuring how `build_candidate_return_matrix()` receives benchmark returns.
 
-Optimal block length selection: the current block length is fixed at √n, which is a common heuristic. Politis and White (2004) provide a data-driven method using spectral density estimation that adapts to each return series' autocorrelation structure.
+**EM algorithm for Kalman MLE** would make `make run-kalman` 3–5× faster. The Nelder-Mead optimiser re-runs the full Kalman filter on every function evaluation. The EM algorithm has a closed-form E-step for the local level model and a natural stopping criterion; it would eliminate the ~2,000 filter passes per window.
+
+**Optimal block length** via the Politis-White (2004) spectral method would replace the fixed √n heuristic. The optimal block length depends on the autocorrelation structure of each return series, which differs across assets and regimes. The current heuristic is reasonable but not calibrated to the data.
 
 ---
 
@@ -195,8 +220,10 @@ Optimal block length selection: the current block length is fixed at √n, which
 - White, H. (2000). A Reality Check for Data Snooping. *Econometrica*, 68(5), 1097–1126.
 - Grinold, R. & Kahn, R. (2000). *Active Portfolio Management*, 2nd ed. Chapter 2.
 - Politis, D.N. & Romano, J.P. (1994). The Stationary Bootstrap. *JASA*, 89(428), 1303–1313.
-- Welch, G. & Bishop, G. (1995). An Introduction to the Kalman Filter. UNC TR 95-041.
+- Moskowitz, T.J., Ooi, Y.H. & Pedersen, L.H. (2012). Time Series Momentum. *Journal of Financial Economics*, 104(2), 228–250.
+- Harvey, A.C. (1989). *Forecasting, Structural Time Series Models and the Kalman Filter*. Cambridge University Press.
 - Politis, D.N. & White, H. (2004). Automatic Block-Length Selection for the Dependent Bootstrap. *Econometric Reviews*, 23(1), 53–70.
+- Lesmond, D.A., Ogden, J.P. & Trzcinka, C. (1999). A New Estimate of Transaction Costs. *Review of Financial Studies*, 12(5), 1113–1141.
 
 ---
 

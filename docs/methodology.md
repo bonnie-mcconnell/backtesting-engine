@@ -115,13 +115,53 @@ backtesting-engine --strategy ma --seed 137 --end 2024-12-31
 | Marginal and seed-sensitive | p=0.03, p=0.08, p=0.12 | **Do not claim significance.** The result depends on the bootstrap draw, not the data. Report it as marginal. |
 | Inconsistent direction | p=0.04, p=0.09, p=0.04 | Marginal. Run more seeds or increase `N_PERMUTATIONS` in config. |
 
-**What seed-dependence means statistically:** Bootstrap p-values have sampling variance of approximately `sqrt(p(1-p)/N)` where N is the number of permutations. With N=10,000 and p=0.05, the standard error is ~0.002, so p-values within ±0.005 of each other across seeds are consistent. Variation larger than ±0.01 at the 5% threshold indicates the result is marginal. In that case, increasing `N_PERMUTATIONS` to 50,000 in `config.py` will reduce variance but not change the underlying conclusion - a marginal result with more permutations is still marginal.
+**What seed-dependence means statistically:** Bootstrap p-values have sampling variance of approximately `sqrt(p(1-p)/N)` where N is the number of permutations. With N=10,000 and p=0.05, the standard error is ~0.002, so p-values within ±0.005 of each other across seeds are consistent. Variation larger than ±0.01 at the 5% threshold indicates the result is marginal. In that case, increasing `N_PERMUTATIONS` to 50,000 in `config.py` will reduce variance but will not change a marginal result into a significant one.
 
 The default seed is 42 (set in `config.py` as `BLOCK_BOOTSTRAP_SEED`). All results in the README and `docs/reproducibility.md` use `--seed 42`. Setting `--seed` also affects the cost sensitivity sweep bootstraps, so a full reproducible run requires specifying seed, end date, and all execution parameters.
 
 ---
 
-## Known failure modes and limitations
+## Cross-asset validation
+
+`make run-multi` runs MA crossover walk-forward independently on SPY, QQQ, TLT, and GLD
+using the same execution config and window parameters as the single-asset run. This addresses
+the most common critique of single-asset backtests: a strategy that works on SPY but not on
+QQQ, TLT, or GLD is probably fitting to a US equity bull-market regime, not detecting a
+genuine pattern.
+
+The comparison table reports Sharpe, Fisher p, RC p, beats-B&H fraction, and Information
+Ratio for each ticker. A null result that holds consistently across all four asset classes
+is a stronger negative finding than the single-asset SPY result alone.
+
+**Current scope:** MA crossover only. Kalman and momentum cross-asset validation are not
+yet implemented. Running Kalman on GLD with a 3-year training window takes ~5 minutes
+per ticker due to the MLE optimisation on every window; this is a known constraint.
+
+**Interpretation note:** Each ticker is tested independently. There is no correction for
+testing four assets (no Bonferroni or Holm step-down). A single ticker appearing significant
+at p<0.05 while three others are null should not be treated as a significant finding without
+further investigation.
+
+---
+
+## `N_PERMUTATIONS`: production vs test
+
+`config.py` sets `N_PERMUTATIONS = 10_000`. This is the value used by `make run` and
+`make run-frozen`. It gives bootstrap p-value estimates accurate to ±0.003 at p=0.05
+(standard error = √(p(1-p)/N) ≈ 0.002).
+
+The test suite patches this to 200 via a session-scoped fixture in `conftest.py`. 200
+permutations is sufficient to verify statistical correctness properties (p-values in [0,1],
+directional response to drift, seed reproducibility) without running 90+ minutes in CI.
+
+If you want to run the full-precision bootstrap in the test suite (e.g. to verify a marginal
+p-value is stable), comment out the `_patch_n_permutations` fixture in `conftest.py` and
+re-run. The suite will take approximately 5–10 minutes per Python version.
+
+---
+
+
+## Known limitations and failure modes
 
 These are the ways this framework can give misleading results even when used correctly:
 

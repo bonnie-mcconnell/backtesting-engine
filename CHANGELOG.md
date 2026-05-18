@@ -1,6 +1,118 @@
 # Changelog
 
-## [0.7.0] - 2026-05-11
+## [0.8.0] - 2026-05-12
+
+> **Note on version numbering:** there is no 0.7.x release. The fixes now grouped
+> under the "Fixed" sections below were developed incrementally after 0.6.2 and
+> shipped together as 0.8.0 once cross-asset validation was complete. The 0.7.x
+> version range was never tagged or released.
+
+### Added
+
+- **Cross-asset validation** (`multi_asset.py`, `tests/test_multi_asset.py`).
+  `make run-multi` runs MA crossover walk-forward independently on SPY, QQQ, TLT,
+  and GLD (2005–2024), prints a comparison table with Sharpe, Fisher p, RC p,
+  Information Ratio, and a verdict on whether the null result is consistent across
+  asset classes. Tickers that fail data loading are skipped gracefully with a warning.
+  `run_multi_asset()` exported from the public API (`__init__.py`).
+
+- **`py.typed` PEP 561 marker** added to `src/backtesting_engine/`. The package now
+  correctly signals to mypy and other type checkers that inline type hints are
+  available for downstream consumers.
+
+- `BenchmarkResult.per_window_benchmark_sharpes: list[float]` - per-window BH
+  Sharpe ratios for accurate dashboard bar colouring.
+- `tests/test_fixes.py` - 26 new tests covering the correctness fixes in this release.
+- `tests/test_integration.py` - end-to-end coverage for walk-forward, benchmark,
+  and dashboard wiring on synthetic data.
+- `docs/performance.md` - runtime expectations and profiling notes.
+
+### Fixed - CI / test infrastructure
+
+- **CI was timing out after 6 hours** (`.github/workflows/ci.yml`, `tests/conftest.py`).
+  Root cause: `N_PERMUTATIONS=10_000` was used in every test that called `walk_forward()`,
+  with 49+ such calls in the suite. That is ~1.47M bootstrap iterations per Python version.
+  Fix: `conftest.py` now patches `N_PERMUTATIONS` to 200 for the full test session via an
+  `autouse=True, scope="session"` fixture. Production runs still use 10,000.
+  `timeout-minutes: 20` added to the CI job as a safety net.
+  Full suite now runs in a few minutes rather than timing out.
+
+- **Redundant walk_forward calls eliminated across the test suite**.
+  `test_integration.py`: rewrote `TestFullPipelineMA` from `setup_method` (re-runs
+  walk_forward for every test method) to a class-scoped `ma_pipeline` fixture. Same for
+  `TestFullPipelineKalman`, `TestFullPipelineMomentum`, `TestCrossComponentConsistency`.
+  Result: 31 integration tests run in ~24s vs 120+s previously.
+  `test_walk_forward.py`: refactored from 28 independent walk_forward calls to 5, using
+  module-scoped `wf_result_504` and `wf_result_756` fixtures from `conftest.py`.
+  `test_benchmark.py`: `small_result` fixture promoted to `scope="class"`.
+  `test_fixes.py`: `TestBenchmarkResultPerWindowSharpes`, `TestBenchmarkSlippageParity`,
+  `TestRCFlatCashParity` refactored to class-scoped fixtures.
+  `test_final_fixes.py`: `test_walk_forward_stores_formatted_params_on_window` and
+  `test_walk_forward_stores_spec_on_window_result` now use the shared `wf_result_504`
+  fixture instead of running their own grid-search walk_forward calls.
+  `conftest.py`: added module-scoped `wf_result_504` and `wf_result_756` fixtures with
+  detailed docstrings explaining the scope rationale and `_ZERO_FRICTION` constant.
+
+- **CDN self-containment assertion was wrong** (`test_integration.py`).
+  The string `cdn.plot.ly` appears inside the embedded Plotly JS bundle as a URL for
+  topojson data; it is not a CDN load instruction. The previous assertion
+  `assert "cdn.plot.ly" not in html` always failed silently (hanging the test because
+  pytest waited for the assertion error while the test appeared to pass in the partial
+  CI output). Fixed: assertion now checks for `src="https://cdn.plot.ly` (the actual
+  CDN script-tag pattern) rather than the bare string.
+
+- **`white_reality_check` bootstrap patch was silently ineffective** (`reality_check.py`).
+  `white_reality_check` had `n_bootstrap: int = N_PERMUTATIONS` as a default argument.
+  Python evaluates default arguments at function-definition time (module import), not at
+  call time, so `conftest.py`'s session fixture patching `_rc_module.N_PERMUTATIONS`
+  had no effect: every RC call still ran 10,000 iterations regardless. Fixed: signature
+  changed to `n_bootstrap: int | None = None`; the function reads `N_PERMUTATIONS` inside
+  the body where it resolves at call time. `_monte_carlo_p_value` in `metrics.py` already
+  used this pattern correctly. Full suite now runs in a few minutes locally (was ~90s even
+  after fixture deduplication, because RC was still running at full 10,000 iterations).
+
+### Removed
+
+- **`_LOOKBACK_GRID` alias in `momentum.py`**. `fit()` now references
+  `MOMENTUM_LOOKBACKS` from `config.py` directly. `test_momentum.py` updated to
+  import from the canonical source. `test_final_fixes.py` updated to verify `fit()`
+  iterates over `MOMENTUM_LOOKBACKS` directly.
+
+### Changed
+
+- **`pyproject.toml`** now includes `[project.urls]` (Homepage, Repository,
+  Documentation, Changelog) and version bumped to 0.8.0.
+- **`docs/performance.md`** updated with accurate CI timing and explanation of the
+  N_PERMUTATIONS test patch.
+- **`docs/methodology.md`** updated: cross-asset validation section added;
+  N_PERMUTATIONS production vs test distinction documented.
+- **`docs/reproducibility.md`**: fixed invalid `make run-frozen --no-cache` syntax.
+- **README**: `make run-multi` in quickstart; `multi_asset.py` in architecture diagram;
+  "What I would do next" updated to reflect cross-asset validation is partially
+  implemented; Known Limitations updated; test count updated. References updated:
+  replaced Welch & Bishop (1995) with Harvey (1989) (correct reference for the
+  local-level Kalman model); added Moskowitz, Ooi & Pedersen (2012) for time-series
+  momentum. Dashboard panels described in Results section for reviewers who cannot
+  run the code.
+- **`walk_forward.py`**: renamed local `valid = window_results` to `all_windows`
+  to remove confusion with `BacktestResult.valid_windows` property.
+- **`test_fixes.py`**: removed duplicate `_make_oscillating`; now routes through
+  `make_oscillating_data` in `helpers.py` via a thin wrapper.
+- **`ingestion.py`**: moved deferred imports (`time`, `warnings`, `numpy`) from
+  function bodies to module level. Deferred imports obscure the module's dependency
+  graph and signal incomplete attention to module structure.
+- **`simulator.py`**: removed duplicate `_OpenPosition` dataclass (identical to
+  `execution.py`). Now imports `_OpenPosition` from `execution.py` directly,
+  eliminating the silent-divergence risk if field names change in one file but not
+  the other.
+- **`CONTRIBUTING.md`**: replaced the misleading `MomentumStrategy` example (which
+  showed `fit()` as a no-op and omitted `candidate_test_returns()`) with a
+  `FixedMomentumStrategy` example that accurately represents a parameter-free
+  strategy, plus an explicit warning that grid-search strategies must implement
+  `candidate_test_returns()` to enable White's Reality Check.
+
+
+
 
 ### Fixed - Crash bugs
 
@@ -69,14 +181,7 @@
 - Execution docstring corrected: defaults are 0.1% cost, 5% slippage, 1-bar delay.
 - README placeholder git clone URL corrected to the real repository URL.
 
-### Added
 
-- `BenchmarkResult.per_window_benchmark_sharpes: list[float]` - per-window BH
-  Sharpe ratios for accurate dashboard bar colouring.
-- `tests/test_fixes.py` - 26 new tests covering all v0.7.0 correctness fixes.
-- `tests/test_integration.py` - end-to-end coverage for walk-forward, benchmark,
-  and dashboard wiring on synthetic data.
-- `docs/performance.md` - runtime expectations and profiling notes.
 
 ## [0.6.2] - 2026-05-06
 

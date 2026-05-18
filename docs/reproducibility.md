@@ -58,7 +58,35 @@ On first run, `load_data()` downloads from Yahoo Finance and writes a Parquet fi
 
 For fixed `--end` runs, the cache TTL is 365 days (frozen data does not change). For live runs (no `--end`), the TTL is 24 hours.
 
-To force a fresh download: `make run-frozen --no-cache` or add `--no-cache` to any command.
+To force a fresh download, use the `--no-cache` flag directly:
+
+```bash
+backtesting-engine --ticker SPY --start 1993-01-29 --end 2024-12-31 \
+  --cost 0.001 --slippage 0.05 --delay 1 --train-years 3 --test-years 1 \
+  --seed 42 --no-cache --output-dir results/
+```
+
+Or use `make run-frozen` (which does not pass `--no-cache`; the cache is intentional for reproducibility).
+
+---
+
+## If data download fails
+
+`load_data()` uses [yfinance](https://github.com/ranaroussi/yfinance), which is an
+unofficial Yahoo Finance API wrapper. Yahoo occasionally changes their endpoints without
+notice, which can cause yfinance to break independently of anything in this project.
+
+If `make run-frozen` or `make run` fails with a network or data error, the most likely
+cause is a stale yfinance version. Fix:
+
+```bash
+pip install yfinance --upgrade
+```
+
+Then retry. If the error persists after upgrading, check the
+[yfinance issues page](https://github.com/ranaroussi/yfinance/issues) for reports of
+a current upstream breakage. This is the one external dependency in this project that
+is not under our control.
 
 ---
 

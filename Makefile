@@ -1,4 +1,4 @@
-.PHONY: run run-ma run-kalman run-momentum run-costs run-frozen run-custom test lint typecheck check install clean help
+.PHONY: run run-ma run-kalman run-momentum run-costs run-frozen run-custom run-multi test lint typecheck check install clean help
 
 # ── Installation ──────────────────────────────────────────────────────────────
 
@@ -34,6 +34,22 @@ run-frozen:
 	poetry run backtesting-engine \
 	  --ticker SPY \
 	  --start 1993-01-29 \
+	  --end 2024-12-31 \
+	  --cost 0.001 \
+	  --slippage 0.05 \
+	  --delay 1 \
+	  --train-years 3 \
+	  --test-years 1 \
+	  --seed 42 \
+	  --output-dir results/
+
+## Run cross-asset validation: MA strategy across SPY, QQQ, TLT, GLD (2005-2024)
+## Tests whether null result on SPY holds across asset classes
+run-multi:
+	mkdir -p results
+	poetry run python -m backtesting_engine.multi_asset \
+	  --tickers SPY QQQ TLT GLD \
+	  --start 2005-01-01 \
 	  --end 2024-12-31 \
 	  --cost 0.001 \
 	  --slippage 0.05 \

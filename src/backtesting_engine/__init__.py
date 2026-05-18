@@ -1,8 +1,6 @@
 """
 backtesting-engine - Walk-forward validated backtesting with statistical rigour.
 
-Public API
-----------
 Run all three strategies with one call:
 
     from backtesting_engine import walk_forward, MovingAverageStrategy
@@ -65,6 +63,7 @@ from backtesting_engine.models import (
     Trade,
     WindowResult,
 )
+from backtesting_engine.multi_asset import run_multi_asset
 from backtesting_engine.reality_check import build_candidate_return_matrix, white_reality_check
 from backtesting_engine.strategy.base import BaseStrategy, returns_from_signals
 from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
@@ -103,4 +102,6 @@ __all__ = [
     # Statistical testing
     "white_reality_check",
     "build_candidate_return_matrix",
+    # Cross-asset validation
+    "run_multi_asset",
 ]

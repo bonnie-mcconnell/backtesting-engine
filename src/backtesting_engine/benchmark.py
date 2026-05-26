@@ -83,7 +83,7 @@ def compute_benchmark(
     The benchmark is a fully-invested long position opened at the start of each
     test window and closed at the end, with the same transaction cost AND slippage
     applied on entry and exit. Both frictions are included so the comparison is
-    genuinely apples-to-apples: the strategy pays cost + slippage on every fill;
+    directly comparable: the strategy pays cost + slippage on every fill;
     the benchmark must pay the same on its single round-trip per window.
 
     Args:

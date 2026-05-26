@@ -134,7 +134,7 @@ Adding a new strategy means implementing this interface. The walk-forward runner
 
 **Cost-inclusive position sizing.** `position_value = cash × fraction / (1 + cost_rate)` so that `position_value + buy_cost = cash × fraction` exactly. The intuitive formula (`position_value = cash × fraction`, then subtract cost) creates a small negative cash balance after every trade.
 
-**Benchmark cost and slippage parity.** The buy-and-hold benchmark applies the same `transaction_cost_rate` and `slippage_factor` from `ExecutionConfig` as the strategy. The strategy pays both frictions on every fill; the benchmark pays them on its one round-trip entry and exit per window. This makes the comparison genuinely apples-to-apples across cost sensitivity sweeps.
+**Benchmark cost and slippage parity.** The buy-and-hold benchmark applies the same `transaction_cost_rate` and `slippage_factor` from `ExecutionConfig` as the strategy. The strategy pays both frictions on every fill; the benchmark pays them on its one round-trip entry and exit per window. This makes the comparison consistent across cost sensitivity sweeps.
 
 ---
 

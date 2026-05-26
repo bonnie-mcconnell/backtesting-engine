@@ -89,7 +89,7 @@ The execution model has three parameters:
 |---|---|---|
 | `transaction_cost_rate` | 0.001 | Fee per side (0.1%). Typical for a retail ETF trade on a major broker. |
 | `slippage_factor` | 0.05 | Fill = close ± 5% of daily high-low range. On a 0.5% intraday range, this is 2.5 bps. |
-| `signal_delay` | 1 | Signal generated on day t, executed at day t+1 open. Prevents look-ahead. |
+| `signal_delay` | 1 | Signal generated on day t, executed at day t+1 close (approximating a t+1 open fill). Prevents look-ahead. |
 
 The 0.1% fee is conservative for institutional access but realistic for retail. Use `--cost 0.0001 --slippage 0.01` to model near-zero-cost execution. The cost sensitivity sweep shows how significance degrades across the full parameter space.
 

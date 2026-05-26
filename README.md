@@ -67,9 +67,7 @@ This produces `results/dashboard_ma.html`, `results/dashboard_kalman.html`, `res
 5. **Returns distribution**: histogram of daily returns vs Normal fit
 6. **Trade diagnostics**: per-trade P&L, holding period distribution, win rate across windows
 
-The headline result for all three strategies is a Fisher combined p-value well above 0.05 and a Reality Check p-value similarly non-significant after multiple-comparison correction. The cost sensitivity sweep shows that at zero cost and zero slippage, some strategies look significant; the significance disappears as execution costs are raised toward the 0.1%/5% baseline, confirming that the apparent edge is mostly friction-dependent.
-
-The table below intentionally does not hardcode numbers. Hardcoded numbers become stale within weeks as data revisions accumulate, and a mismatch between the README and actual output is a credibility problem. Run the command and the dashboards will show every metric with full context.
+The headline result for all three strategies is a Fisher combined p-value well above 0.05. For MA crossover and momentum (both of which search a parameter grid), the Reality Check p-value is also non-significant after multiple-comparison correction. For the Kalman filter, which has no parameter grid, Reality Check does not apply. The cost sensitivity sweep shows that at zero cost and zero slippage, some strategies look significant; the significance disappears as execution costs are raised toward the 0.1%/5% baseline, confirming that the apparent edge is mostly friction-dependent.
 
 See [docs/reproducibility.md](docs/reproducibility.md) for environment details,
 [docs/methodology.md](docs/methodology.md) for statistical methodology,

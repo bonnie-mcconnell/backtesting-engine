@@ -8,7 +8,7 @@ install:
 
 # ── Running strategies ────────────────────────────────────────────────────────
 
-## Run all three strategies + cost sensitivity sweep (~4–6 min on first run)
+## Run all three strategies + cost sensitivity sweep (~10–15 min on first run)
 run:
 	poetry run backtesting-engine
 

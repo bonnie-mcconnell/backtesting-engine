@@ -86,13 +86,14 @@ approximately independent (they don't overlap).
 Standard backtesting picks the best-performing parameter set and reports its
 Sharpe. This is data snooping: you haven't tested one strategy, you've tested
 the whole grid and reported the winner. White's RC corrects for this: the null
-is that the best strategy is no better than the worst, after accounting for the
-search across all candidates. A small RC p-value means the best strategy is
+is that no strategy in the candidate universe has positive expected performance
+relative to the benchmark (cash), after accounting for the search across all
+candidates. A small RC p-value means the best strategy is
 significantly better than chance even after the multiple-comparison correction.
 
 This is also why Sharpe-based p-value and RC p-value can diverge: the former
-tests whether the selected strategy beats zero; the latter tests whether it
-beats the rest of the candidate grid.
+tests whether the selected strategy beats zero; the latter tests whether the
+best candidate beats zero after correcting for the number of candidates tried.
 
 ### Why per-window Fisher AND RC (not just one)
 

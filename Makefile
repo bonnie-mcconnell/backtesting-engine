@@ -8,7 +8,7 @@ install:
 
 # ── Running strategies ────────────────────────────────────────────────────────
 
-## Run all three strategies + cost sensitivity sweep (~10–15 min on first run)
+## Run all three strategies + cost sensitivity sweep (~10–15 min on Mac/Linux; longer on Windows, see docs/performance.md)
 run:
 	poetry run backtesting-engine
 
@@ -30,7 +30,7 @@ run-costs:
 
 ## Reproduce the exact README results (frozen end date, fixed seed, deterministic)
 run-frozen:
-	mkdir -p results
+	python -c "import os; os.makedirs('results', exist_ok=True)"
 	poetry run backtesting-engine \
 	  --ticker SPY \
 	  --start 1993-01-29 \
@@ -46,7 +46,7 @@ run-frozen:
 ## Run cross-asset validation: MA strategy across SPY, QQQ, TLT, GLD (2005-2024)
 ## Tests whether null result on SPY holds across asset classes
 run-multi:
-	mkdir -p results
+	python -c "import os; os.makedirs('results', exist_ok=True)"
 	poetry run python -m backtesting_engine.multi_asset \
 	  --tickers SPY QQQ TLT GLD \
 	  --start 2005-01-01 \

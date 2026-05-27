@@ -6,8 +6,14 @@ Expected runtimes, bottlenecks, and how to make runs faster.
 
 ## Expected runtimes
 
-All timings are from a 2023 MacBook Pro (M2, 8 cores). Windows/Linux on equivalent
-hardware is within 20–30%.
+All timings are from a 2023 MacBook Pro (M2, 8 cores). Linux on equivalent
+hardware is within 20–30%. **Windows is significantly slower for `make run`
+and `make run-costs`** because Python's `multiprocessing` uses `spawn` on
+Windows (vs `fork` on Linux/Mac). Each parallel worker reimports the full
+module before executing, adding ~3–8 seconds of overhead per worker. On
+Windows, `make run` takes ~30–40 min and `make run-costs` can take 2–3 hours.
+Run with `--workers 1` to use sequential execution on Windows, which avoids
+spawn overhead at the cost of parallelism.
 
 | Command | First run (download) | Subsequent runs (cached) |
 |---|---|---|
@@ -87,9 +93,12 @@ results = cost_sensitivity_sweep(
 )
 ```
 
-On an 8-core machine, a 5×5 sweep that takes 20 minutes serially completes in
-~3 minutes. Note: parallelism uses `ProcessPoolExecutor` (spawns Python subprocesses)
-so startup overhead is ~2–3 seconds per worker.
+On an 8-core Mac/Linux machine, a 5×5 sweep that takes 20 minutes serially
+completes in ~3 minutes. On Windows, spawn overhead dominates and parallelism
+provides little benefit; use `--workers 1` on Windows for predictable runtime.
+Note: parallelism uses `ProcessPoolExecutor` (spawns Python subprocesses),
+so startup overhead is ~2–3 seconds per worker on Mac/Linux and ~3–8 seconds
+per worker on Windows.
 
 ### Skip cost sensitivity
 

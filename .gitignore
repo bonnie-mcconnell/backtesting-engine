@@ -35,3 +35,6 @@ results/
 .cache/
 
 summary.txt
+
+# Build artefacts from `poetry build`
+dist/

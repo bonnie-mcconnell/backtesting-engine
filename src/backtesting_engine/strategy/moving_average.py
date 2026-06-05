@@ -69,23 +69,8 @@ class MovingAverageStrategy(BaseStrategy):
         Grid-search (short_window, long_window) on training data.
 
         Selects the pair with the highest in-sample Sharpe. Stores all
-        evaluated pairs in _all_candidate_pairs_ so that
-        candidate_test_returns() can evaluate the same universe on test data.
-
-        Important: the grid search uses pre-cost, pre-slippage, zero-delay
-        returns (via _returns_from_signals). This is standard practice - you
-        cannot know execution costs with certainty during parameter selection,
-        and optimising over costs would introduce another layer of look-ahead.
-        The selected parameters are then evaluated out-of-sample with the full
-        execution model (costs, slippage, delay) via walk_forward. The gap
-        between pre-cost and post-cost performance is captured by comparing
-        the training Sharpe to the test Sharpe in each WindowResult.
-
-        Args:
-            train_data: In-sample DataFrame with 'close' column.
-
-        Returns:
-            self, with short_window_ and long_window_ updated.
+        evaluated pairs in _all_candidate_pairs_ for candidate_test_returns().
+        Grid search uses pre-cost returns - see architecture.md for why.
         """
         best_sharpe = -np.inf
         best_short = self.short_window_
@@ -165,8 +150,8 @@ class MovingAverageStrategy(BaseStrategy):
         transition from context to test data. If yes, inject a buy signal at
         test_data.index[0] so the simulator opens the position immediately.
 
-        This ensures the test window reflects the actual strategy state, not
-        a reset to cash at every window boundary.
+        Ensures the test window reflects the actual strategy state rather
+        than resetting to cash at every window boundary.
 
         Args:
             context_data: Tail of training data for rolling-average warmup.
@@ -208,9 +193,8 @@ class MovingAverageStrategy(BaseStrategy):
         Run every candidate (short, long) pair on the test data.
 
         Returns out-of-sample daily return series for each candidate.
-        This is the correct input for White's Reality Check: we need
-        test-period performance of the full candidate universe, not
-        training-period performance of the winner.
+        RC requires test-period performance of the full candidate universe,
+        not training-period performance of the winner.
 
         Boundary carry-over is applied identically to generate_signals_with_context:
         if a candidate would be long at the context/test boundary, a buy signal

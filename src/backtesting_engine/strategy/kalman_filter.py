@@ -1,36 +1,21 @@
 """
 Kalman filter trend-following strategy with MLE parameter calibration.
 
-We treat log-price as the sum of a latent trend and observation noise.
-The trend evolves as a random walk:
+Local-level model: log-price = latent trend + observation noise.
 
     trend[t] = trend[t-1] + w[t],    w[t] ~ N(0, Q)   (process noise)
     log_price[t] = trend[t] + v[t],  v[t] ~ N(0, R)   (observation noise)
 
-This is a local-level model with a closed-form Kalman filter recursion.
-Q is the process noise variance (how fast the latent trend can change);
-R is the observation noise variance (how much price movement is considered
-noise). The ratio Q/R determines filter behaviour: high Q/R means the
-filter tracks price closely; low Q/R means it smooths aggressively.
+Q and R are calibrated per training window by maximising the Kalman filter
+log-likelihood. Optimisation runs over log(Q) and log(R) - enforces positivity
+and keeps Nelder-Mead in a symmetric search space since Q and R can span
+many orders of magnitude. Gradient methods don't work well here because the
+likelihood surface has curvature discontinuities near Q→0.
 
-Q and R are chosen on each training window by maximising the log-likelihood
-of the one-step-ahead prediction errors (innovations). The optimisation runs
-over log(Q) and log(R): enforces positivity and keeps Nelder-Mead in a
-symmetric search space since Q and R can span many orders of magnitude.
-Nelder-Mead is used rather than a gradient method because the likelihood
-surface has curvature discontinuities at the boundary Q→0.
-
-After running the filter forward through test data using training-calibrated
-Q and R, the signal is the sign change in filtered trend velocity (Δtrend):
-buy when velocity crosses above zero, sell when it crosses below, hold otherwise.
-This is a smoothed, forward-looking estimate of trend direction: less noisy than
-raw price differences, more responsive than a fixed MA because Q and R adapt to
-the return variance of each training window.
-
-A 50/200-day MA is a special case of a Kalman filter with fixed, implicit Q and R.
-The difference is exponentially decaying weights (Kalman) vs equal weights over N
-days (MA). When training data shows high return variance, the filter learns a smaller
-Q/R and becomes more conservative. A fixed MA cannot adapt this way.
+The signal is the sign change in filtered trend velocity (Δtrend): buy when
+velocity crosses above zero, sell when it crosses below. This adapts to each
+training window's return variance in a way a fixed MA can't - when volatility
+is high the filter calibrates a smaller Q/R and smooths more aggressively.
 
 Harvey, A.C. (1989). Forecasting, Structural Time Series Models and the Kalman
 Filter. Cambridge University Press.
@@ -46,15 +31,10 @@ from scipy.optimize import minimize
 
 from backtesting_engine.strategy.base import BaseStrategy
 
-# Numerical floor for variances - prevents degenerate filters where Q or R
-# collapse to zero and the Kalman gain becomes undefined.
-_MIN_VARIANCE: float = 1e-8
-
-# Nelder-Mead convergence tolerances. Tighter than scipy defaults to avoid
-# premature termination on flat likelihood surfaces.
-_OPTIM_XATOL: float = 1e-6
-_OPTIM_FATOL: float = 1e-6
-_OPTIM_MAXITER: int = 2000
+_MIN_VARIANCE: float = 1e-8    # floor for Q and R; prevents degenerate Kalman gain
+_OPTIM_XATOL: float  = 1e-6   # Nelder-Mead tolerances - tighter than scipy defaults
+_OPTIM_FATOL: float  = 1e-6   # to avoid premature convergence on flat surfaces
+_OPTIM_MAXITER: int  = 2000
 
 
 class KalmanFilterStrategy(BaseStrategy):
@@ -62,14 +42,13 @@ class KalmanFilterStrategy(BaseStrategy):
     Kalman filter trend-following strategy.
 
     Args:
-        q_init: Initial process noise variance for optimisation warm-start.
-            Default chosen to be in a reasonable range for daily log-returns.
-        r_init: Initial observation noise variance for optimisation warm-start.
+        q_init: Initial process noise variance (warm-start for optimisation).
+        r_init: Initial observation noise variance.
 
     Attributes set by fit():
         q_: Calibrated process noise variance.
         r_: Calibrated observation noise variance.
-        log_likelihood_: Log-likelihood of training data under calibrated (q_, r_).
+        log_likelihood_: Log-likelihood of training data under (q_, r_).
     """
 
     def __init__(
@@ -82,7 +61,6 @@ class KalmanFilterStrategy(BaseStrategy):
         self.q_init = q_init
         self.r_init = r_init
 
-        # Calibrated values - set by fit(), read by generate_signals().
         self.q_: float = q_init
         self.r_: float = r_init
         self.log_likelihood_: float = float("-inf")
@@ -92,38 +70,16 @@ class KalmanFilterStrategy(BaseStrategy):
     # ------------------------------------------------------------------
 
     def context_window_size(self) -> int:
-        """
-        Return the warmup window for Kalman filter initialisation.
-
-        The Kalman filter initialises from the first observation it receives
-        and converges to its steady-state gain within roughly 20–50 bars,
-        depending on Q/R. Providing 50 context bars ensures the filter state
-        is stable before signals are evaluated on test data.
-
-        50 is conservative - the filter converges within ~20 bars for typical
-        Q/R values - but the cost of extra context is negligible and the
-        protection against poorly initialised states at window boundaries
-        is worth it.
-        """
+        """50-bar warmup so the filter state is stable at the test window start."""
         return 50
 
     def fit(self, train_data: pd.DataFrame) -> "KalmanFilterStrategy":
         """
-        Calibrate Q and R by maximising the Kalman filter log-likelihood
-        on the training window.
+        Calibrate Q and R by maximising the Kalman filter log-likelihood.
 
-        The optimisation is over log(Q) and log(R) rather than Q and R
-        directly. This reparameterisation has two advantages:
-          1. It enforces positivity without an explicit constraint.
-          2. It makes the search space more symmetric - Q and R can span
-             many orders of magnitude, and the log space keeps Nelder-Mead
-             from spending most of its budget in unproductive regions.
-
-        Args:
-            train_data: DataFrame with DatetimeIndex and 'close' column.
-
-        Returns:
-            self, with q_ and r_ updated.
+        Runs Nelder-Mead in log(Q), log(R) space. The reparameterisation
+        enforces positivity and makes the search space roughly symmetric -
+        Q and R span many orders of magnitude in practice.
         """
         log_prices = np.log(train_data["close"].to_numpy(dtype=float))
 
@@ -131,7 +87,6 @@ class KalmanFilterStrategy(BaseStrategy):
             q = float(np.exp(log_params[0]))
             r = float(np.exp(log_params[1]))
             ll = _kalman_log_likelihood(log_prices, q, r)
-            # Return large positive value (not nan/inf) so optimiser stays stable.
             return -ll if np.isfinite(ll) else 1e10
 
         x0 = np.array([np.log(self.q_init), np.log(self.r_init)])
@@ -146,7 +101,7 @@ class KalmanFilterStrategy(BaseStrategy):
                     "xatol": _OPTIM_XATOL,
                     "fatol": _OPTIM_FATOL,
                     "maxiter": _OPTIM_MAXITER,
-                    "adaptive": True,   # adaptive Nelder-Mead for robustness
+                    "adaptive": True,
                 },
             )
 
@@ -156,30 +111,15 @@ class KalmanFilterStrategy(BaseStrategy):
         return self
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
-        """
-        Run the Kalman filter forward and generate trend-velocity signals.
-
-        Args:
-            data: DataFrame with DatetimeIndex and 'close' column.
-
-        Returns:
-            pd.Series of integer signals (1, -1, 0) aligned to data.index.
-        """
+        """Run the filter forward and return trend-velocity crossing signals."""
         log_prices = np.log(data["close"].to_numpy(dtype=float))
         filtered_trend = _kalman_filter(log_prices, self.q_, self.r_)
 
-        # Trend velocity: difference of consecutive filtered state estimates.
         velocity = np.diff(filtered_trend, prepend=filtered_trend[0])
-
-        # Signal = sign change in velocity (trend reversal).
-        # positive velocity: trend accelerating upward → hold long.
-        # velocity crosses zero downward: trend reversing → sell.
-        # velocity crosses zero upward: trend reversing → buy.
         trending_up = velocity > 0
+        # +1 where velocity crossed up (buy), -1 where it crossed down (sell)
         signal_raw = np.diff(trending_up.astype(int), prepend=int(trending_up[0]))
-        # +1 = crossed up (buy), -1 = crossed down (sell), 0 = no change.
-        signals = pd.Series(signal_raw.astype(int), index=data.index)
-        return signals
+        return pd.Series(signal_raw.astype(int), index=data.index)
 
     def generate_signals_with_context(
         self, context_data: pd.DataFrame, test_data: pd.DataFrame
@@ -187,50 +127,25 @@ class KalmanFilterStrategy(BaseStrategy):
         """
         Run the filter on context + test data, return only test signals.
 
-        The Kalman filter naturally handles warmup because the filter state
-        initialises from the first observation and converges within a few bars.
-        Context data improves initialisation by providing a better prior for
-        the filter state at the test window start.
-
-        Position carry-over: if the filter velocity is positive at the end of
-        the context window (strategy is long), a buy signal is injected at the
-        first test bar. Without this, a long position established during warmup
-        would be silently dropped and the strategy would start flat.
-
-        Args:
-            context_data: Tail of training data for filter initialisation.
-            test_data: Out-of-sample test period.
-
-        Returns:
-            pd.Series of signals aligned to test_data.index only.
+        Position carry-over: if filter velocity is positive at the last context
+        bar, inject a buy signal at test bar 0. Without this, a long position
+        established during warmup would be silently dropped.
         """
         combined = pd.concat([context_data, test_data])
         all_signals = self.generate_signals(combined)
         test_signals = all_signals.loc[test_data.index].copy()
 
-        # Detect filter velocity at the context/test boundary.
-        # If velocity > 0 at the last context bar, inject a buy at test bar 0
-        # to carry the long position forward.
         log_prices_context = np.log(context_data["close"].to_numpy(dtype=float))
         filtered_context = _kalman_filter(log_prices_context, self.q_, self.r_)
         if len(filtered_context) >= 2:
             velocity_at_boundary = filtered_context[-1] - filtered_context[-2]
             if velocity_at_boundary > 0 and test_signals.iloc[0] == 0:
-                test_signals.iloc[0] = 1  # carry long position forward
+                test_signals.iloc[0] = 1
 
         return test_signals
 
     def active_params(self) -> dict[str, object]:
-        """
-        Return calibrated parameters as a plain dict for WindowResult storage.
-
-        The signal-to-noise ratio (Q/R) is the interpretable quantity:
-        high SNR → filter tracks price closely (trending regime);
-        low SNR → filter smooths aggressively (mean-reverting regime).
-
-        Returns:
-            Dict with keys 'q', 'r', 'snr', 'log_likelihood'.
-        """
+        """Calibrated Q, R, SNR, and log-likelihood for WindowResult storage."""
         return {
             "q": self.q_,
             "r": self.r_,
@@ -239,12 +154,10 @@ class KalmanFilterStrategy(BaseStrategy):
         }
 
     def format_params(self) -> str:
-        """Return compact string e.g. 'SNR=1.23e-03'."""
         snr = self.q_ / max(self.r_, 1e-300)
         return f"SNR={snr:.2e}"
 
     def param_evolution_spec(self) -> list[tuple[str, str]]:
-        """Two lines: SNR and log-likelihood over time."""
         return [
             ("Q/R signal-to-noise ratio", "snr"),
             ("Log-likelihood", "log_likelihood"),
@@ -252,65 +165,40 @@ class KalmanFilterStrategy(BaseStrategy):
 
 
 # ---------------------------------------------------------------------------
-# Core Kalman recursions - pure NumPy, no dependencies
+# Core Kalman recursions
 # ---------------------------------------------------------------------------
 
 def _kalman_filter(log_prices: np.ndarray, q: float, r: float) -> np.ndarray:
     """
     Run the Kalman filter forward and return filtered state estimates.
 
-    State: latent trend level μ[t].
-    Observation: y[t] = log_price[t] = μ[t] + v[t], v[t] ~ N(0, R).
-    Transition: μ[t] = μ[t-1] + w[t], w[t] ~ N(0, Q).
+    State-space model:
+        Transition:   μ[t] = μ[t-1] + w[t],    w ~ N(0, Q)
+        Observation:  y[t] = μ[t]   + v[t],    v ~ N(0, R)
 
-    Kalman recursion (predict → update):
-        Predict:  μ[t|t-1] = μ[t-1|t-1]
-                  P[t|t-1] = P[t-1|t-1] + Q
-        Update:   S[t]     = P[t|t-1] + R          (innovation variance)
-                  K[t]     = P[t|t-1] / S[t]       (Kalman gain)
-                  μ[t|t]   = μ[t|t-1] + K[t] * e[t]  (e[t] = y[t] - μ[t|t-1])
-                  P[t|t]   = (1 - K[t]) * P[t|t-1]
+    Standard predict-update recursion:
+        Predict:  P[t|t-1] = P[t-1] + Q
+        Update:   K = P[t|t-1] / (P[t|t-1] + R)
+                  μ[t] = μ[t-1] + K * (y[t] - μ[t-1])
+                  P[t] = (1 - K) * P[t|t-1]
 
-    Args:
-        log_prices: Log-price series as a NumPy array.
-        q: Process noise variance (Q).
-        r: Observation noise variance (R).
-
-    Returns:
-        Array of filtered state estimates μ[t|t], same length as log_prices.
+    Prior: μ₀ = log_prices[0], P₀ = 1.0 (weakly informative; filter converges
+    within ~5 bars for typical Q/R values, eliminated entirely by the 50-bar
+    context window).
     """
     n = len(log_prices)
     filtered = np.empty(n)
 
-    # Prior: diffuse initialisation.
-    # mu_0 = first observation (best available prior mean with no other information).
-    # P_0  = 1.0 - a weakly informative prior variance scaled to log-price space.
-    #
-    # Why 1.0 and not a truly diffuse prior (P → ∞)?
-    # In log-price space, a daily log-return of 0.01 (1%) is typical for equities.
-    # A prior variance of 1.0 means the prior 95% interval is ±2 log-price units,
-    # corresponding to a price range of roughly [e^-2, e^2] ≈ [0.13×, 7.4×] the
-    # starting price - which is uninformative for any realistic asset.
-    #
-    # In the limit P → ∞ the first-bar Kalman gain K → 1, so the filter simply
-    # sets μ[0] = y[0] and P[0] = R. With P=1 and typical calibrated R~1e-2,
-    # the first-bar K = (1+Q)/(1+Q+R) ≈ 0.99 - practically identical to the
-    # diffuse limit. Any residual initialisation effect decays within ~5 bars.
-    # The context window (50 bars) eliminates this effect entirely for test signals.
     mu = log_prices[0]
     p = 1.0
 
     for t in range(n):
-        # Predict step
         p_pred = p + q
-
-        # Update step
-        s = p_pred + r                   # innovation variance
-        k = p_pred / s                   # Kalman gain ∈ (0, 1)
-        innovation = log_prices[t] - mu  # one-step prediction error
-        mu = mu + k * innovation         # updated state estimate
-        p = (1.0 - k) * p_pred          # updated state variance
-
+        s = p_pred + r
+        k = p_pred / s
+        innovation = log_prices[t] - mu
+        mu = mu + k * innovation
+        p = (1.0 - k) * p_pred
         filtered[t] = mu
 
     return filtered
@@ -318,34 +206,22 @@ def _kalman_filter(log_prices: np.ndarray, q: float, r: float) -> np.ndarray:
 
 def _kalman_log_likelihood(log_prices: np.ndarray, q: float, r: float) -> float:
     """
-    Compute the log-likelihood of log_prices under the local-level model.
+    Gaussian log-likelihood of log_prices under the local-level model.
 
-    The log-likelihood is the sum of log predictive densities:
         ℓ = Σ_t log N(y[t]; μ[t|t-1], S[t])
           = -½ Σ_t [ln(2π) + ln(S[t]) + e[t]² / S[t]]
 
-    where e[t] = y[t] - μ[t|t-1] is the innovation and S[t] is the
-    innovation variance.
-
-    This is the exact Gaussian log-likelihood - no approximations.
-
-    Args:
-        log_prices: Log-price series.
-        q: Process noise variance.
-        r: Observation noise variance.
-
-    Returns:
-        Total log-likelihood (higher is better).
+    where e[t] = y[t] - μ[t|t-1] is the one-step prediction error and
+    S[t] = P[t|t-1] + R is the innovation variance.
     """
     q = max(q, _MIN_VARIANCE)
     r = max(r, _MIN_VARIANCE)
 
-    n = len(log_prices)
     mu = log_prices[0]
     p = 1.0
     ll = 0.0
 
-    for t in range(n):
+    for t in range(len(log_prices)):
         p_pred = p + q
         s = p_pred + r
 

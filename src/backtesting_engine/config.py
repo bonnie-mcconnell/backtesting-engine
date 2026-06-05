@@ -1,5 +1,4 @@
 # All configurable constants for the backtesting engine.
-# Every constant lives here with a name and a justification.
 # Change values here only - never use magic numbers elsewhere in the codebase.
 
 # ---------------------------------------------------------------------------
@@ -7,105 +6,86 @@
 # ---------------------------------------------------------------------------
 
 INITIAL_PORTFOLIO_VALUE: float = 100_000.0
-# Retail-scale capital. Large enough that 0.1% transaction costs (~$100/trade)
-# are non-trivial, small enough to avoid market-impact distortions.
+# retail-scale capital; large enough that 0.1% costs (~$100/trade) are non-trivial
 
 POSITION_SIZE_FRACTION: float = 1.0
-# Full portfolio allocation per trade. Ensures all returns are attributable to
-# strategy performance and eliminates cash-drag dilution from metrics.
+# full allocation per trade; ensures all returns are attributable to strategy
 
 # ---------------------------------------------------------------------------
 # Transaction costs
 # ---------------------------------------------------------------------------
 
 TRANSACTION_COST_RATE: float = 0.001
-# 0.1% per side, reflecting retail brokerage (e.g. Interactive Brokers tiered).
-# Deliberately conservative - real institutional costs are lower, so this
-# understates rather than overstates strategy performance.
+# 0.1% per side, reflecting retail brokerage (e.g. Interactive Brokers tiered)
+# intentionally conservative - understates strategy performance relative to
+# institutional costs
 
 # ---------------------------------------------------------------------------
-# Walk-forward validation windows
+# Walk-forward windows
 # ---------------------------------------------------------------------------
 
 TRAINING_WINDOW_YEARS: int = 3
-# 3:1 train/test ratio captures a full bull/bear cycle without overfitting to
-# a single market regime. Standard in academic strategy evaluation literature.
+# 3:1 train/test ratio captures a full bull/bear cycle without regime overfitting
 
 TESTING_WINDOW_YEARS: int = 1
-# One-year out-of-sample windows produce ~26 independent evaluations on 30
-# years of SPY data. Enough windows to distinguish consistency from luck.
+# one-year OOS windows produce ~26 independent evaluations on 30 years of SPY
 
 # ---------------------------------------------------------------------------
-# Moving average crossover strategy (golden cross / death cross)
+# Moving average crossover
 # ---------------------------------------------------------------------------
 
 MOVING_AVERAGE_SHORT_DAYS: int = 50
 MOVING_AVERAGE_LONG_DAYS: int = 200
-# Industry-standard pair for equity trend following. The 200-day MA is
-# widely tracked by institutional participants, which gives the signal
-# partial self-fulfilling properties on broad indices.
+# industry-standard pair; 200-day MA is widely tracked institutionally
 
-# Parameter search bounds used during walk-forward training.
-# Grid is intentionally coarse to avoid overfitting on the training window.
 MA_SHORT_RANGE: tuple[int, int] = (20, 80)    # (min, max) days inclusive
 MA_LONG_RANGE: tuple[int, int] = (100, 250)   # (min, max) days inclusive
-MA_STEP: int = 10                              # grid step for both axes
+MA_STEP: int = 10                              # coarse grid by design - finer grids overfit
 
 # ---------------------------------------------------------------------------
 # Annualisation
 # ---------------------------------------------------------------------------
 
 ANNUALISATION_FACTOR: int = 252
-# NYSE/NASDAQ trading days per year. Used to scale daily Sharpe/Sortino/Calmar
-# to annualised equivalents, enabling comparison with published benchmarks.
+# NYSE/NASDAQ trading days per year
 
 # ---------------------------------------------------------------------------
 # Risk-free rate
 # ---------------------------------------------------------------------------
 
 RISK_FREE_RATE: float = 0.0
-# Daily risk-free rate for Sharpe/Sortino excess return calculation.
-# Zero makes results comparable across time periods with different rate regimes
-# and is the standard default for strategy development. For a 5% annual rate:
-# set to 0.05 / 252 ≈ 0.000198.
+# daily risk-free rate for Sharpe/Sortino excess return calculation
+# zero makes results comparable across time periods with different rate regimes
+# for a 5% annual rate: set to 0.05 / 252 ≈ 0.000198
 
 # ---------------------------------------------------------------------------
-# Monte Carlo block bootstrap significance test
+# Bootstrap significance test
 # ---------------------------------------------------------------------------
 
 N_PERMUTATIONS: int = 10_000
-# Below 1,000 the p-value estimate is noisy (+/-0.02 at p=0.05);
-# above 100,000 gives diminishing accuracy returns. 10,000 is the
-# standard choice in finance literature (e.g. White, 2000).
+# below 1,000 the p-value estimate is noisy; above 100,000 gives diminishing returns
+# 10,000 is standard in finance literature (White, 2000)
+# note: test suite patches this to 200 via conftest.py to keep CI fast
 
 SIGNIFICANCE_THRESHOLD: float = 0.05
-# Fisher's conventional threshold. Treat as a guideline, not a hard rule:
-# p=0.049 and p=0.051 are not meaningfully different.
+# treat as a guideline, not a hard cutoff - p=0.049 and p=0.051 aren't meaningfully different
 
 BLOCK_BOOTSTRAP_SEED: int = 42
-# Fixed seed for reproducibility. Any seed produces valid statistics;
-# this one ensures output is identical across runs for documentation purposes.
 
 # ---------------------------------------------------------------------------
 # Data
 # ---------------------------------------------------------------------------
 
 TICKER: str = "SPY"
-# S&P 500 ETF. Chosen for liquidity, 30+ years of history from inception
-# (1993), and absence of survivorship bias relative to individual equities.
+# S&P 500 ETF; 30+ years of history from inception (1993); no survivorship bias
 
 START_DATE: str = "1993-01-01"
-# SPY inception date, maximising available history for walk-forward windows.
-# Earlier dates would require switching to a different index proxy.
 
 # ---------------------------------------------------------------------------
 # Momentum strategy
 # ---------------------------------------------------------------------------
 
 MOMENTUM_LOOKBACKS: list[int] = [20, 40, 60, 90, 120, 180, 250]
-# Lookback periods (in trading days) tested during momentum grid search.
-# Range covers 1 month (20 days) through ~12 months (250 days), matching the
-# intermediate-horizon momentum documented in Moskowitz, Ooi & Pedersen (2012).
-# Coarser than the MA grid by design - momentum Sharpe is flatter across
-# lookbacks, so a fine grid would overfit without improving OOS performance.
-
+# 1 month through ~12 months, matching intermediate-horizon momentum documented
+# in Moskowitz, Ooi & Pedersen (2012)
+# coarser than the MA grid by design - momentum Sharpe is flatter across lookbacks

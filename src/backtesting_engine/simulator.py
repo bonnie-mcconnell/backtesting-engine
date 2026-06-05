@@ -1,8 +1,8 @@
 """
 Trade execution simulator - baseline, cost-only, no slippage or signal delay.
 
-This module provides `run_simulation()`: a readable, bar-by-bar implementation
-of the core execution loop used for unit testing and as a transparent reference.
+`run_simulation()` is a readable, bar-by-bar implementation of the core
+execution loop, used for unit testing and as a transparent reference.
 
 `run_simulation_with_execution()` in execution.py is the production path used
 by all walk-forward runs. It extends this baseline with configurable slippage

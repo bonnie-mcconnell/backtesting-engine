@@ -1,43 +1,25 @@
 """
 Realistic execution model with slippage, signal delay, and cost sensitivity.
 
-The gap between backtested and live performance is primarily an execution
-problem. Fill-at-close with a fixed percentage fee is the best-case scenario.
-Real execution has three additional frictions:
+The gap between backtested and live performance is mostly an execution problem.
+Fill-at-close with a fixed fee is the best-case scenario. Real execution adds:
 
-1. Slippage
-   You rarely fill at exactly the close. Market orders fill somewhere in the
-   bid-ask spread; the larger your order relative to average volume, the
-   more the price moves against you before it fills. We model slippage as a
+1. Slippage - market orders rarely fill at exactly the close. Modelled as a
    fraction of the day's high-low range:
+       fill_buy  = close + slippage_factor × (high - low)
+       fill_sell = close - slippage_factor × (high - low)
+   slippage_factor=0 recovers fill-at-close. 0.05 (the default) is conservative
+   for liquid ETFs like SPY. Reference: Lesmond, Ogden & Trzcinka (1999).
 
-       fill_price_buy  = close + slippage_factor × (high - low)
-       fill_price_sell = close - slippage_factor × (high - low)
+2. Signal delay - the close isn't known until after market close; you can't act
+   on it the same bar. With delay=1 the signal fires on day t and fills at
+   day t+1's close (approximating a t+1 open fill). Many strategies that look
+   good on close prices go marginal with a one-day delay.
 
-   This is a standard approximation used in academic backtesting literature
-   (e.g. Lesmond, Ogden & Trzcinka, 1999). slippage_factor = 0 recovers
-   the fill-at-close model. A value of 0.1 means you fill at a price 10%
-   of the daily range away from close, which is conservative for liquid
-   ETFs like SPY.
-
-2. Signal delay
-   Real strategies cannot act on a signal at the same bar that generated it.
-   The close price is not known until after market close; by then it is too
-   late to act on that bar's close. With delay=1, the signal fired on day t
-   results in a fill at day t+1's open (approximated here as t+1's close).
-   This is a common and important realism check - many strategies that look
-   good at close prices become marginal or negative with a one-day delay.
-
-3. Cost sensitivity analysis
-   We sweep over (transaction_cost_rate, slippage_factor) grids and compute
-   the full walk-forward Fisher p-value at each point. The result is a 2D
-   heatmap showing at what cost level the strategy loses statistical
-   significance. The breakeven cost is the most important single number for
-   deciding whether a backtested strategy is worth pursuing live.
-
-`ExecutionConfig` is a dataclass holding all execution parameters. Passed to
-`run_simulation_with_execution()` instead of using global config constants,
-allowing cost sensitivity sweeps without touching config.py.
+3. Cost sensitivity sweep - runs a full walk-forward at each (cost, slippage)
+   grid point and returns a 2D heatmap of Fisher p-values. The breakeven cost
+   level is the most important single number for deciding whether to pursue
+   a strategy live.
 """
 
 from __future__ import annotations
@@ -57,11 +39,9 @@ from backtesting_engine.config import (
 from backtesting_engine.models import SimulationResult, Trade
 
 if TYPE_CHECKING:
-    # Imported for type annotations only. At runtime, execution.py is imported
-    # by strategy/__init__.py (which re-exports from execution), creating a cycle
-    # if we import strategy.base unconditionally. TYPE_CHECKING is False at runtime
-    # so this branch is skipped; from __future__ import annotations makes all
-    # annotations strings so BaseStrategy is never evaluated at import time.
+    # TYPE_CHECKING is False at runtime, so this import doesn't create a cycle.
+    # execution.py is imported by strategy/__init__.py; importing strategy.base
+    # unconditionally would create a circular dependency.
     from backtesting_engine.strategy.base import BaseStrategy
 
 _VALID_SIGNALS = frozenset({-1, 0, 1})
@@ -72,16 +52,16 @@ class ExecutionConfig:
     """
     Parameters controlling trade execution realism.
 
-    Defaults match the CLI and README: cost=0.1%/side, slippage=5% of daily
-    range, delay=1 bar. These are intentionally conservative so out-of-the-box
-    results reflect realistic execution, not fill-at-close.
+    Defaults: cost=0.1%/side, slippage=5% of daily range, delay=1 bar.
+    These are intentionally conservative so out-of-the-box results reflect
+    realistic execution, not fill-at-close.
 
     For zero-friction comparison (e.g. to verify strategy logic in isolation):
         ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0)
     """
     transaction_cost_rate: float = TRANSACTION_COST_RATE   # 0.001 = 0.1% per side
     slippage_factor: float = 0.05    # fraction of daily high-low range; 0 = fill at close
-    signal_delay: int = 1            # bars to delay execution; 1 prevents lookahead bias
+    signal_delay: int = 1            # bars; 1 prevents lookahead bias
 
     def __post_init__(self) -> None:
         if self.transaction_cost_rate < 0:
@@ -94,13 +74,10 @@ class ExecutionConfig:
 
 @dataclass
 class _OpenPosition:
-    """
-    State for a single open long position.
+    """State for a single open long position.
 
-    Grouping entry_price and entry_date into one object means the type
-    system enforces that you cannot have one without the other. This
-    eliminates the assert-based None-narrowing pattern that would silently
-    break if asserts were stripped by Python's -O flag.
+    A dataclass rather than loose variables so the type system enforces that
+    entry_price and entry_date are always set together.
     """
     entry_price: float
     entry_date: pd.Timestamp
@@ -117,13 +94,10 @@ def run_simulation_with_execution(
 
     Args:
         data: OHLCV DataFrame with DatetimeIndex. Must have 'close'.
-              If slippage_factor > 0, must also have 'high' and 'low'.
+              'high' and 'low' required when slippage_factor > 0.
         signals: Integer signal series with values in {-1, 0, 1}.
         execution: ExecutionConfig instance. Defaults to cost=0.1%,
-                   slippage=5% of daily range, delay=1 bar - the same
-                   conservative realistic model used by the CLI.
-                   For zero-friction testing use:
-                   ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0).
+                   slippage=5% of daily range, delay=1 bar.
 
     Returns:
         SimulationResult with executed trades and portfolio value series.
@@ -157,10 +131,8 @@ def run_simulation_with_execution(
 
     close = data["close"].to_numpy(dtype=float)
     high = data["high"].to_numpy(dtype=float) if "high" in data.columns else close
-    low = data["low"].to_numpy(dtype=float) if "low" in data.columns else close
+    low  = data["low"].to_numpy(dtype=float)  if "low"  in data.columns else close
 
-    # Apply signal delay: shift signals forward by signal_delay bars.
-    # Signals that fall off the end are dropped (never executed).
     if execution.signal_delay > 0:
         delay = execution.signal_delay
         delayed_values = np.zeros(len(signals), dtype=int)
@@ -173,30 +145,26 @@ def run_simulation_with_execution(
     trades: list[Trade] = []
     portfolio_values: list[float] = []
 
-    slippage = execution.slippage_factor
+    slippage  = execution.slippage_factor
     cost_rate = execution.transaction_cost_rate
 
     for idx, (date, signal) in enumerate(signals.items()):
         date = pd.Timestamp(str(date))
         daily_range = high[idx] - low[idx]
 
-        # Fill prices with slippage: buys fill above close, sells below.
-        buy_fill = close[idx] + slippage * daily_range
+        buy_fill  = close[idx] + slippage * daily_range
         sell_fill = close[idx] - slippage * daily_range
 
         if position is None and signal == 1:
-            # Open long position.
-            # Size so that cost-inclusive spend (position_value + buy_cost) fits
-            # exactly within available cash.  The naive approach of spending
-            # cash * POSITION_SIZE_FRACTION plus the fee creates negative cash
-            # (slight leverage) on every trade.
-            #   position_value × (1 + cost_rate) = cash × POSITION_SIZE_FRACTION
-            #   position_value = cash × POSITION_SIZE_FRACTION / (1 + cost_rate)
+            # Cost-inclusive sizing: position_value × (1 + cost_rate) = cash × fraction
+            # so that position_value + buy_cost fits exactly within available cash.
+            # The naive formula (cash * fraction, then subtract cost) creates a small
+            # negative cash balance after every trade.
             available = cash * POSITION_SIZE_FRACTION
             position_value = available / (1.0 + cost_rate)
             buy_cost = position_value * cost_rate
             shares = position_value / buy_fill
-            cash -= position_value + buy_cost  # exactly zero cash remaining
+            cash -= position_value + buy_cost
             position = _OpenPosition(
                 entry_price=buy_fill,
                 entry_date=date,
@@ -204,10 +172,9 @@ def run_simulation_with_execution(
             )
 
         elif position is not None and signal == -1:
-            # Close long position.
             sell_proceeds = position.shares * sell_fill
             sell_cost = sell_proceeds * cost_rate
-            buy_cost = position.shares * position.entry_price * cost_rate
+            buy_cost  = position.shares * position.entry_price * cost_rate
             pnl = (
                 (sell_proceeds - sell_cost)
                 - (position.shares * position.entry_price + buy_cost)
@@ -227,12 +194,12 @@ def run_simulation_with_execution(
         shares_held = position.shares if position is not None else 0.0
         portfolio_values.append(cash + shares_held * close[idx])
 
-    # Force-close any open position at end of window.
+    # force-close any open position at window end
     if position is not None:
         sell_fill_final = close[-1] - slippage * (high[-1] - low[-1])
         sell_proceeds = position.shares * sell_fill_final
         sell_cost = sell_proceeds * cost_rate
-        buy_cost = position.shares * position.entry_price * cost_rate
+        buy_cost  = position.shares * position.entry_price * cost_rate
         pnl = (
             (sell_proceeds - sell_cost)
             - (position.shares * position.entry_price + buy_cost)
@@ -262,27 +229,20 @@ def run_simulation_with_execution(
 
 def _sweep_worker(
     args: tuple[
-        tuple[float, float],   # (cost_rate, slippage_factor)
-        pd.DataFrame,          # data
-        str,                   # strategy class name
-        int,                   # training_window_years
-        int,                   # testing_window_years
-        int,                   # bootstrap_seed
+        tuple[float, float],
+        pd.DataFrame,
+        str,
+        int,
+        int,
+        int,
     ],
 ) -> tuple[tuple[float, float], float]:
     """
     Module-level worker for ProcessPoolExecutor.
 
-    Nested functions are not picklable on Windows (spawn-based multiprocessing),
-    so this must live at module scope. Receives all state as arguments rather
-    than closing over variables from the enclosing scope.
-
-    The strategy is reconstructed by class name rather than passed as an object
-    to avoid pickling issues with scipy optimizer internal state in KalmanFilterStrategy.
-
-    bootstrap_seed is forwarded to walk_forward() so that cost-sweep results are
-    reproducible when --seed is passed on the CLI.  Without this, the sweep always
-    used the hardcoded config default regardless of --seed.
+    Has to be at module scope to be picklable on Windows (spawn-based).
+    Strategy reconstructed by class name to avoid pickling scipy optimizer
+    state from KalmanFilterStrategy.
     """
     from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
     from backtesting_engine.strategy.momentum import MomentumStrategy
@@ -293,8 +253,8 @@ def _sweep_worker(
 
     _strategy_map = {
         "MovingAverageStrategy": MovingAverageStrategy,
-        "KalmanFilterStrategy": KalmanFilterStrategy,
-        "MomentumStrategy": MomentumStrategy,
+        "KalmanFilterStrategy":  KalmanFilterStrategy,
+        "MomentumStrategy":      MomentumStrategy,
     }
     strategy_cls = _strategy_map.get(strategy_name)
     if strategy_cls is None:
@@ -332,44 +292,17 @@ def cost_sensitivity_sweep(
     """
     Sweep over (cost_rate, slippage_factor) pairs and return Fisher p-values.
 
-    Runs a full walk-forward analysis at each (cost, slippage) combination.
-    The result maps each pair to the Fisher combined p-value, which can be
-    visualised as a heatmap showing where the strategy loses statistical
-    significance - the breakeven cost level.
-
-    Each combination is fully independent, so the sweep parallelises well.
-    Set n_workers > 1 to use multiple CPU cores. On a machine with 8+ cores
-    a 5×5 grid that takes ~12 minutes serially completes in ~2 minutes.
-
-    Note on parallelism: The worker function (_sweep_worker) is module-level
-    to be picklable on Windows (which uses spawn, not fork). The strategy is
-    reconstructed by class name in each worker to avoid pickling scipy optimizer
-    internal state.
-
-    Args:
-        data: Full historical OHLCV DataFrame. Must include 'close'.
-              'high' and 'low' are required for slippage_factor > 0.
-        strategy: Any BaseStrategy implementation (used for class name only in parallel).
-        cost_rates: List of transaction cost rates to test.
-        slippage_factors: List of slippage fractions to test.
-        training_window_years: Years per training window.
-        testing_window_years: Years per test window.
-        n_workers: Number of parallel workers. 1 = sequential (default).
-                   Use -1 to use all available CPUs.
+    Each combination is fully independent so the sweep parallelises trivially.
+    Set n_workers > 1 for multiple CPU cores; -1 uses all available.
+    On an 8-core machine a 5×5 grid that takes ~12 minutes serially finishes
+    in ~2 minutes.
 
     Returns:
         Dict mapping (cost_rate, slippage_factor) → Fisher p-value.
-        NaN if walk_forward raised for that combination (e.g. insufficient data).
-
-    bootstrap_seed is forwarded to every walk_forward() call so that cost-sweep
-    results are reproducible when a fixed seed is desired.  Defaults to
-    BLOCK_BOOTSTRAP_SEED (config.py).
+        NaN if walk_forward raised for that combination.
     """
-    # os and concurrent.futures are imported here rather than at module level.
-    # This is intentional: cost_sensitivity_sweep is only called when the user
-    # requests a cost sweep. Deferring these imports keeps them visible next to
-    # the code that uses them, and documents that this function is the sole
-    # entry point for parallel execution in this module.
+    # deferred imports - these are only needed when a sweep is actually run,
+    # and keeping them here makes it obvious this is the only parallel entry point
     import os
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -386,13 +319,10 @@ def cost_sensitivity_sweep(
     results: dict[tuple[float, float], float] = {}
 
     if n_workers == 1:
-        # Sequential path: simpler, no pickling overhead, easier to debug.
         for wargs in worker_args:
             key, p_val = _sweep_worker(wargs)
             results[key] = p_val
     else:
-        # Parallel path: each walk-forward is independent so embarrassingly parallel.
-        # ProcessPoolExecutor avoids GIL; each worker gets its own Python interpreter.
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_sweep_worker, wargs): wargs for wargs in worker_args}
             for future in as_completed(futures):

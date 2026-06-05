@@ -222,7 +222,7 @@ def _parse_args() -> argparse.Namespace:
             "Cross-asset walk-forward validation. "
             "Tests MA crossover across multiple tickers and produces a comparison table."
         ),
-        epilog="Example: python -m backtesting_engine.multi_asset --tickers SPY QQQ TLT GLD",
+        epilog="Example: backtesting-multi --tickers SPY QQQ TLT GLD",
     )
     parser.add_argument(
         "--tickers",

@@ -1,41 +1,16 @@
 """
-Buy-and-hold benchmark comparison.
+Buy-and-hold benchmark comparison for walk-forward results.
 
-The standard critique of any active strategy is: does it beat just holding
-the index? Beating buy-and-hold on raw Sharpe over one historical period is
-not the right bar - buy-and-hold has survivorship bias, the comparison
-ignores the path dependency of active strategies, and a single Sharpe comparison
-has no notion of statistical significance.
+compute_benchmark() runs buy-and-hold on the same test windows used by
+walk_forward() and computes: per-window Sharpe comparison, information ratio
+(annualised active return / tracking error, per Grinold & Kahn 2000), paired
+t-test on per-window Sharpe differences, and beats-benchmark fraction.
 
-This module computes:
+BenchmarkResult is separate from BacktestResult by design: BacktestResult
+contains everything walk-forward produces without a benchmark assumption;
+BenchmarkResult is an explicit normative comparison the caller opts into.
 
-  1. Buy-and-hold metrics on the same test windows used by walk_forward(),
-     so the comparison uses identical data slices and identical costs.
-
-  2. Information ratio: annualised mean active return divided by active return
-     volatility. IR uses active risk (tracking error) as the denominator rather
-     than total volatility, which is the right comparison when strategies differ
-     in turnover and time in market. A positive IR means the strategy added
-     alpha per unit of active risk.
-
-  3. A paired t-test on per-window Sharpe differences. Because we have ~26
-     independent windows, we can test whether the strategy consistently beats
-     buy-and-hold across windows, not just on average. This is more meaningful
-     than a single Sharpe comparison.
-
-  4. Relative drawdown: strategy max drawdown vs benchmark max drawdown. A
-     strategy with worse drawdown than buy-and-hold is hard to justify even
-     if its Sharpe is similar.
-
-These metrics are returned as a separate `BenchmarkResult` from `compute_benchmark()`
-and surfaced in both the console output and the dashboard. They are deliberately
-separate from `BacktestResult` rather than embedded in it: `BacktestResult`
-contains everything that walk-forward produces without any benchmark assumption;
-`BenchmarkResult` adds a specific normative comparison (vs buy-and-hold) that
-the caller explicitly requests.
-
-Grinold, R. & Kahn, R. (2000). Active Portfolio Management (2nd ed.).
-Chapter 2 defines the information ratio and its relationship to alpha.
+Grinold, R. & Kahn, R. (2000). Active Portfolio Management (2nd ed.). Chapter 2.
 """
 
 import dataclasses

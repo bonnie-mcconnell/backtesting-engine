@@ -12,8 +12,9 @@ and `make run-costs`** because Python's `multiprocessing` uses `spawn` on
 Windows (vs `fork` on Linux/Mac). Each parallel worker reimports the full
 module before executing, adding ~3–8 seconds of overhead per worker. On
 Windows, `make run` takes ~30–40 min and `make run-costs` can take 2–3 hours.
-Run with `--workers 1` to use sequential execution on Windows, which avoids
-spawn overhead at the cost of parallelism.
+The `n_workers` parameter on `cost_sensitivity_sweep()` controls parallelism
+in the Python API but is not exposed as a CLI flag in v0.8.0. On Windows,
+sequential execution is the most reliable path.
 
 | Command | First run (download) | Subsequent runs (cached) |
 |---|---|---|
@@ -35,10 +36,9 @@ It uses Nelder-Mead (gradient-free), running up to 2,000 iterations per window.
 With ~26 walk-forward windows, this is ~52,000 optimizer evaluations, each running
 the full Kalman filter forward pass on 756 bars.
 
-This is the correct tradeoff: Nelder-Mead is robust to the curvature discontinuities
-near `Q→0` that break gradient-based methods. Faster alternatives (L-BFGS-B, gradient
-descent) are unstable at the boundary. The EM algorithm would be faster and is worth
-exploring for a future version.
+Nelder-Mead is robust to the curvature discontinuities near `Q→0` that break
+gradient-based methods. L-BFGS-B and gradient descent are unstable at the boundary.
+The EM algorithm would be faster and is worth exploring for a future version.
 
 **Rough breakdown for `make run-kalman`:**
 - Kalman MLE across ~26 windows: ~80% of total time
@@ -95,7 +95,8 @@ results = cost_sensitivity_sweep(
 
 On an 8-core Mac/Linux machine, a 5×5 sweep that takes 20 minutes serially
 completes in ~3 minutes. On Windows, spawn overhead dominates and parallelism
-provides little benefit; use `--workers 1` on Windows for predictable runtime.
+provides little benefit. The `n_workers` parameter is available via the Python
+API (`cost_sensitivity_sweep(n_workers=-1)`) but not as a CLI flag in v0.8.0.
 Note: parallelism uses `ProcessPoolExecutor` (spawns Python subprocesses),
 so startup overhead is ~2–3 seconds per worker on Mac/Linux and ~3–8 seconds
 per worker on Windows.

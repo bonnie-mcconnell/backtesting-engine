@@ -1,11 +1,8 @@
 """
 Unit tests for the MovingAverageStrategy and BaseStrategy utilities.
 
-Tests cover signal generation correctness, fit() parameter calibration,
-warmup context, the BaseStrategy interface contract, and the shared
-returns_from_signals() function.
-
-Shared helpers (make_oscillating_data) come from helpers.py.
+MovingAverageStrategy signal generation, fit() calibration, warmup context,
+and the BaseStrategy interface. Also covers returns_from_signals() edge cases.
 """
 
 import numpy as np

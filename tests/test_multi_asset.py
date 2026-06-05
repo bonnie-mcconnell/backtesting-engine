@@ -1,12 +1,8 @@
 """
-Tests for multi_asset.py cross-asset validation module.
+Tests for cross-asset walk-forward validation (multi_asset.py).
 
-Tests verify:
-  1. run_multi_asset produces correct output structure
-  2. Tickers that fail gracefully (insufficient data, load error) are skipped
-  3. The comparison table prints without error
-  4. CLI argument parsing produces correct ExecutionConfig values
-  5. module is importable as __main__
+Output structure, graceful skipping of tickers that fail data loading,
+comparison table rendering, and CLI argument parsing.
 """
 
 from __future__ import annotations

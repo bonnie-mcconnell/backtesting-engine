@@ -1,9 +1,8 @@
 """
 Unit tests for the benchmark comparison module.
 
-Tests verify that buy-and-hold metrics are computed correctly over the same
-windows as the walk-forward result, that the information ratio is well-defined,
-and that the paired t-test is valid.
+Buy-and-hold metrics are computed on the same walk-forward windows as the
+strategy, with matching execution costs. Expected values derived by hand.
 
 Shared helpers (make_oscillating_data) come from helpers.py.
 """

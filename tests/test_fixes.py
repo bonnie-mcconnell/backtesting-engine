@@ -72,7 +72,7 @@ class TestFmtMetric:
 
     def test_inf_result_is_not_raw_format_specifier(self) -> None:
         # The old bug: _fmt_metric(v, "∞") tried format(v, "∞") → ValueError.
-        # This test ensures the returned string is a display value, not the symbol.
+        # Verify the returned string is a display value, not the raw symbol.
         result = self._fmt(float("inf"))
         # Should not look like Python tried to use ∞ as a format spec error message.
         assert "format" not in result.lower()
@@ -232,9 +232,9 @@ class TestRCFlatCashParity:
     def test_fisher_and_rc_cover_same_number_of_windows(self) -> None:
         """Fisher p uses all windows including flat-cash; RC must too.
 
-        This test uses its own walk_forward call (not the shared fixture) because
-        it intentionally uses a different dataset (_make_oscillating with high/low)
-        to verify the property holds under a different data regime.
+        Uses its own walk_forward call rather than the shared fixture because
+        it needs a different dataset (with high/low) to verify the property holds
+        under a different data regime.
         """
         from backtesting_engine.execution import ExecutionConfig
         from backtesting_engine.strategy.moving_average import MovingAverageStrategy

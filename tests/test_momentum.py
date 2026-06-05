@@ -1,8 +1,8 @@
 """
 Unit tests for MomentumStrategy.
 
-Tests cover signal generation correctness, fit() parameter calibration,
-warmup context, candidate_test_returns(), and the BaseStrategy interface.
+Signal generation, fit() calibration, warmup context, candidate_test_returns(),
+and the BaseStrategy interface. All using synthetic data.
 """
 
 import numpy as np

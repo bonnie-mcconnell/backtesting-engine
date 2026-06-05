@@ -1,8 +1,8 @@
 """
 Unit tests for White's Reality Check and stationary bootstrap.
 
-Tests verify p-value bounds, correct behaviour under H0, determinism,
-and candidate matrix assembly from per-window dictionaries.
+p-value bounds, H0 behaviour, seed determinism, and candidate matrix
+assembly from per-window return dicts.
 """
 
 import numpy as np

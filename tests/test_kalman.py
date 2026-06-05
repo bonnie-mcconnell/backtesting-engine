@@ -1,13 +1,9 @@
 """
-Unit tests for the Kalman filter strategy.
+Unit tests for KalmanFilterStrategy.
 
-Tests cover:
-  - Kalman filter recursion correctness (hand-verified values)
-  - Log-likelihood is maximised at calibrated parameters
-  - fit() convergence and parameter validity
-  - Signal generation produces only {-1, 0, 1}
-  - generate_signals_with_context returns only test-period indices
-  - MLE parameters are data-dependent (different data → different params)
+Kalman recursion values are hand-verified against the standard predict-update
+equations. MLE parameter checks compare fit() outputs against known-good inputs.
+All tests use synthetic data only.
 """
 
 import math

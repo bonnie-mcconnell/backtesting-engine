@@ -1,14 +1,9 @@
 """
-Tests for the final fix and cleanup pass (see CHANGELOG v0.8.0).
+Tests for the v0.8.0 cleanup pass (see CHANGELOG).
 
-Covers:
-  1. WindowResult.skipped=True fires DeprecationWarning.
-  2. MOMENTUM_LOOKBACKS in config drives momentum.py's fit() grid directly
-     (the _LOOKBACK_GRID alias was removed in v0.8.0).
-  3. build_candidate_return_matrix accepts both tuple and int keys.
-  4. _extract_active_params no longer exists in walk_forward (was dead code).
-  5. Each strategy exposes format_params() - no strategy-specific knowledge in main.py.
-  6. Each strategy exposes param_evolution_spec() - dashboard has no isinstance checks.
+Covers deprecation warnings on WindowResult.skipped, removal of dead code
+(_LOOKBACK_GRID alias, _extract_active_params), candidate matrix key types,
+and the format_params()/param_evolution_spec() strategy interface.
 """
 
 import warnings
@@ -73,7 +68,7 @@ class TestMomentumLookbackConfig:
     """MOMENTUM_LOOKBACKS in config.py must drive the momentum strategy grid.
 
     The _LOOKBACK_GRID alias was removed in favour of referencing MOMENTUM_LOOKBACKS
-    directly from fit(). These tests verify the canonical grid is used correctly.
+    directly from fit(). Checks the canonical grid is used correctly.
     """
 
     def test_config_lookbacks_match_strategy_grid(self) -> None:
@@ -168,7 +163,7 @@ class TestBuildCandidateReturnMatrixKeyTypes:
 class TestExtractActiveParamsRemoved:
     """_extract_active_params was a dead one-liner wrapper that has been removed.
 
-    This test ensures it is gone and the orchestrator calls strategy.active_params() directly.
+    Verifies it is gone and the orchestrator calls strategy.active_params() directly.
     Prevents it from being accidentally re-added.
     """
 

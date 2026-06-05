@@ -1,17 +1,10 @@
 """
-Correctness invariant tests added during the fix pass.
+Regression tests for the five correctness bugs fixed in the v0.5.x pass.
 
-These tests cover the five bugs that were present in the original codebase and
-have now been corrected.  Each test documents *what* was wrong and verifies the
-correct behaviour, so they serve as both regression guards and as documentation
-for anyone reading the repo.
-
-Invariants tested:
-  1. Position sizing: no negative cash after any trade.
-  2. Benchmark uses the same cost rate as the strategy (not a global constant).
-  3. No-trade windows contribute flat-cash returns (not disappear from the summary).
-  4. Momentum RC evaluates each candidate with its own lookback, not self.lookback_.
-  5. Block bootstrap centred null: iid returns with positive drift give low p-value.
+Each test is paired with the specific failure mode it guards against, documented
+in the test body. The bugs were: negative cash from naive position sizing, benchmark
+using a hardcoded cost rate, flat-cash windows excluded from summary, momentum RC
+evaluating all candidates with the fitted lookback, bootstrap null not centred.
 """
 
 import math

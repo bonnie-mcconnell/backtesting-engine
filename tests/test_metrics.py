@@ -154,7 +154,7 @@ class TestCalmar:
         #   annualised = 0.968^(252/3) - 1 ≈ -8.7%  (negative despite zero arithmetic mean)
         # max_drawdown = (0.88 - 1.0) / 1.0 = -0.20
         # Calmar = annualised / abs(max_dd) ≈ negative / 0.20
-        # This test verifies that we use geometric (not arithmetic) compounding.
+        # Geometric compounding is required - arithmetic overstates annualised return.
         returns = np.array([0.1, -0.2, 0.1])
         n = len(returns)
         cumulative = float(np.prod(1.0 + returns))

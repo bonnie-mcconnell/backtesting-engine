@@ -1,10 +1,8 @@
 """
 Unit tests for the CLI argument parser.
 
-Tests cover argument defaults, flag combinations, and rejection of invalid inputs.
-These tests do not run the full backtesting pipeline - they only verify that
-argparse is configured correctly and that _parse_args() returns the expected
-Namespace for each combination of flags.
+Argument defaults, flag combinations, and rejection of invalid inputs.
+Does not run the pipeline - only exercises _parse_args() and argument handling.
 
 Every CLI flag that exists must have a test here. If you add a new flag,
 add a corresponding test. This prevents the common failure mode of a flag

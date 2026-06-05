@@ -159,7 +159,7 @@ class TestFullPipelineMA:
     """Moving Average strategy: full pipeline integration.
 
     All tests share a single walk_forward result via the ma_pipeline fixture.
-    Tests verify result properties, not the walk_forward call itself - so
+    Inspect result properties, not the walk_forward call itself - so
     sharing is correct and doesn't weaken the assertions.
     """
 
@@ -319,8 +319,8 @@ class TestFullPipelineKalman:
 
         Kalman's param_evolution_spec() returns Q/R SNR entries, so the
         parameter evolution panel should contain recognisable Kalman labels.
-        This test guards against the dashboard falling back silently to an
-        equity-only panel when param_evolution_spec is populated.
+        Guards against the dashboard silently falling back to an equity-only
+        panel when param_evolution_spec is populated.
         """
         p = kalman_pipeline
         with tempfile.TemporaryDirectory() as tmp:

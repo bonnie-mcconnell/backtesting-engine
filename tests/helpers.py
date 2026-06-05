@@ -1,10 +1,10 @@
 """
 Shared test helpers for the backtesting-engine test suite.
 
-This module contains pure functions (no pytest dependency) that generate
-synthetic data used across multiple test modules. It is a regular importable
-module - unlike conftest.py, which is auto-discovered by pytest and cannot
-be reliably imported with `from conftest import ...`.
+Pure functions (no pytest dependency) that generate synthetic data used
+across multiple test modules. Regular importable module - unlike conftest.py,
+which is auto-discovered by pytest and cannot be reliably imported with
+`from conftest import ...`.
 
 Fixtures that wrap these helpers (oscillating_504, oscillating_756, strategy)
 live in conftest.py and are injected by pytest automatically.

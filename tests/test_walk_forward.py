@@ -352,7 +352,7 @@ class TestSummaryMetricAggregation:
 # ── Input validation ──────────────────────────────────────────────────────────
 
 class TestWalkForwardInputValidation:
-    """These tests verify the call raises for bad inputs. Each raises early so they are fast."""
+    """Bad-input validation. Each test raises early so the suite stays fast."""
 
     def test_zero_training_years_raises(self, strategy: MovingAverageStrategy) -> None:
         data = make_oscillating_data(756)

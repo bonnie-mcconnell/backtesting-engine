@@ -47,7 +47,7 @@ run-frozen:
 ## Tests whether null result on SPY holds across asset classes
 run-multi:
 	python -c "import os; os.makedirs('results', exist_ok=True)"
-	poetry run python -m backtesting_engine.multi_asset \
+	poetry run backtesting-multi \
 	  --tickers SPY QQQ TLT GLD \
 	  --start 2005-01-01 \
 	  --end 2024-12-31 \
@@ -91,6 +91,8 @@ check: lint typecheck test
 clean:
 	rm -f dashboard_ma.html dashboard_kalman.html dashboard_momentum.html cost_sensitivity.html
 	rm -rf results/
+	rm -rf dist/
+	rm -rf test-venv/
 	rm -rf ~/.cache/backtesting-engine/
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type d -name .mypy_cache -exec rm -rf {} +

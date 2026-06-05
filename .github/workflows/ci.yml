@@ -74,7 +74,9 @@ jobs:
         run: poetry run python -c "import pyarrow; print('pyarrow', pyarrow.__version__)"
 
       - name: Verify CLI help
-        run: poetry run backtesting-engine --help
+        run: |
+          poetry run backtesting-engine --help
+          poetry run backtesting-multi --help
 
       - name: Verify version consistency (pyproject.toml vs CHANGELOG)
         run: |

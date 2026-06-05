@@ -32,6 +32,7 @@ ruff = ">=0.1.0,<1.0.0"
 
 [tool.poetry.scripts]
 backtesting-engine = "backtesting_engine.main:main"
+backtesting-multi = "backtesting_engine.multi_asset:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

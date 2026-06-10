@@ -1,4 +1,4 @@
-.PHONY: run run-ma run-kalman run-momentum run-costs run-frozen run-custom run-multi test lint typecheck check install clean help
+.PHONY: run run-quick run-ma run-kalman run-momentum run-costs run-frozen run-custom run-multi run-multi-all test lint typecheck check install clean help
 
 # ── Installation ──────────────────────────────────────────────────────────────
 
@@ -7,6 +7,14 @@ install:
 	poetry install
 
 # ── Running strategies ────────────────────────────────────────────────────────
+
+## Quick first look: MA crossover on SPY, no cost sweep (~3 min)
+run-quick:
+	python -c "import os; os.makedirs('results', exist_ok=True)"
+	poetry run backtesting-engine \
+	  --ticker SPY --start 1993-01-29 --end 2024-12-31 \
+	  --strategy ma --cost 0.001 --slippage 0.05 --delay 1 \
+	  --train-years 3 --test-years 1 --output-dir results/
 
 ## Run all three strategies + cost sensitivity sweep (~10–15 min on Mac/Linux; longer on Windows, see docs/performance.md)
 run:
@@ -44,10 +52,28 @@ run-frozen:
 	  --output-dir results/
 
 ## Run cross-asset validation: MA strategy across SPY, QQQ, TLT, GLD (2005-2024)
-## Tests whether null result on SPY holds across asset classes
+## Tests whether null result on SPY holds across asset classes (~8 min)
 run-multi:
 	python -c "import os; os.makedirs('results', exist_ok=True)"
 	poetry run backtesting-multi \
+	  --strategy ma \
+	  --tickers SPY QQQ TLT GLD \
+	  --start 2005-01-01 \
+	  --end 2024-12-31 \
+	  --cost 0.001 \
+	  --slippage 0.05 \
+	  --delay 1 \
+	  --train-years 3 \
+	  --test-years 1 \
+	  --seed 42 \
+	  --output-dir results/
+
+## Run cross-asset validation for all three strategies (~45-60 min due to Kalman)
+## Produces the strongest null result: no strategy beats B&H across any asset class
+run-multi-all:
+	python -c "import os; os.makedirs('results', exist_ok=True)"
+	poetry run backtesting-multi \
+	  --strategy all \
 	  --tickers SPY QQQ TLT GLD \
 	  --start 2005-01-01 \
 	  --end 2024-12-31 \

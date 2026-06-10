@@ -7,17 +7,19 @@ A walk-forward backtesting framework for testing whether systematic trading stra
 
 The short answer for SPY 1993–2024: none of the three strategies tested (moving average crossover, Kalman filter trend-following, time-series momentum) produce statistically significant excess returns over buy-and-hold after 0.1% transaction costs and 5% slippage.
 
-That result is the point. Rigorous negative results - reproducible, inspectable, statistically corrected - are more useful than strategies that look good in backtests and fall apart live.
+That result is the point.
 
 ---
 
 ## Why I built this
 
-I kept running into the same problem: a strategy looks profitable until you add transaction costs, or until you realise the parameter you optimised was the best of 20 candidates and you never corrected for that search. Either of those kills most retail strategies. I wanted a framework that made both problems visible and hard to accidentally hide.
+I was reading papers on time-series momentum and kept running into a specific frustration: the backtests in papers use daily close prices, no transaction costs, and report a single in-sample Sharpe. That's not a backtest - it's a correlation study. I wanted to understand what happens when you add realistic frictions and proper out-of-sample testing. The short answer, at least for SPY, is that the strategies stop working. That result took two months to produce properly and is what this project is.
 
-The Kalman filter was the most technically involved component. Getting MLE calibration right in log-space with a diffuse prior at each window boundary required careful handling of the cold-start problem - the filter diverges on short training windows if the prior variance is set naively. The calibrated SNR shifts noticeably across walk-forward windows in a pattern that tracks the 2000–2002 and 2007–2009 drawdown periods, which is consistent with documented equity market regime changes. It doesn't translate into tradeable alpha, but the structural interpretation is worth examining.
+This is not a strategy execution framework like backtrader or zipline. It's a hypothesis-testing framework - the output is a p-value and a confidence statement, not a trade log. The walk-forward design, the block bootstrap, and White's Reality Check exist specifically to make the null result credible rather than just convenient.
 
-I also wanted to understand White's Reality Check from an implementation standpoint rather than just the paper. Seeing the RC p-value move from significant to non-significant as the parameter grid is widened makes the data-snooping correction concrete in a way that reading the theory doesn't.
+The Kalman filter was the hardest part. Getting MLE calibration right in log-space with a diffuse prior at each window boundary took longer than I expected - the filter diverges on short training windows if you initialise P₀ naively, and the likelihood surface has a shape that breaks gradient methods near Q→0. I ended up using Nelder-Mead on log(Q) and log(R), which is slow but stable. The calibrated SNR shifts across walk-forward windows in a way that tracks the 2000–2002 and 2007–2009 drawdowns, which is at least consistent with documented regime changes in equity volatility, even if it doesn't produce alpha.
+
+I also wanted to understand White's Reality Check from an implementation standpoint. The paper is clear on the theory; the implementation details (centring the bootstrap, handling flat-cash windows, maintaining candidate matrix parity across windows) are less obvious. Working through those made the data-snooping correction concrete in a way the paper doesn't.
 
 ---
 
@@ -27,13 +29,13 @@ I also wanted to understand White's Reality Check from an implementation standpo
 git clone https://github.com/bonnie-mcconnell/backtesting-engine
 cd backtesting-engine
 poetry install
-make run
+make run-quick    # MA crossover on SPY, ~3 min, good first look
 ```
 
-Reproduce the exact README results (frozen to 2024-12-31):
+For the full results (all three strategies + cost sensitivity):
 
 ```bash
-make run-frozen
+make run-frozen   # frozen to 2024-12-31, ~15 min
 ```
 
 Test whether the null result holds across asset classes (SPY, QQQ, TLT, GLD):
@@ -44,37 +46,105 @@ make run-multi
 
 Outputs `results/dashboard_ma.html`, `results/dashboard_kalman.html`, `results/dashboard_momentum.html`, `results/cost_sensitivity.html`. Open any in a browser - they're self-contained HTML with embedded Plotly JS, no server required.
 
+Data is downloaded from Yahoo Finance via yfinance on first run and cached to `~/.cache/backtesting-engine/`. If a run fails with a network error, see [docs/reproducibility.md](docs/reproducibility.md).
+
 ---
 
 ## Results
 
-Run `make run-frozen` to generate current results. The command is:
+The full numerical results are in [RESULTS.md](RESULTS.md). The short version: nothing is significant at p < 0.05 on any test, and all three strategies underperform buy-and-hold on a risk-adjusted basis.
 
-```bash
-backtesting-engine \
-  --ticker SPY --start 1993-01-29 --end 2024-12-31 \
-  --cost 0.001 --slippage 0.05 --delay 1 \
-  --train-years 3 --test-years 1 \
-  --output-dir results/
-```
+The chart below is generated by the actual engine on 12 years of synthetic data (GBM with a 2008-style drawdown added). It uses the same `walk_forward` + `compute_benchmark` calls the CLI uses. The step-function periods are cash - when no MA crossover fires, the strategy sits flat. The real SPY run (`make run-frozen`, ~15 min) produces the same pattern: smaller drawdowns than B&H, lower long-run returns, Fisher p well above 0.05.
 
-This produces `results/dashboard_ma.html`, `results/dashboard_kalman.html`, `results/dashboard_momentum.html`, and `results/cost_sensitivity.html`. Each dashboard is a self-contained HTML file (~4.5MB) with embedded Plotly JS. Open in any browser, no server required.
+![Equity curve: MA Crossover walk-forward vs buy-and-hold (synthetic data - run make run-frozen for SPY)](docs/screenshots/equity_curve.png)
 
 **Dashboard panels (6 per strategy):**
 
-1. **Equity curve**: per-window portfolio values stitched together vs buy-and-hold benchmark across the full SPY history
-2. **Per-window Sharpe**: bar chart comparing strategy Sharpe vs benchmark Sharpe for each of the ~26 test windows, coloured green/red vs that window's benchmark (not the aggregate)
-3. **Rolling drawdown**: maximum drawdown at each bar across the full test period
-4. **Parameter evolution**: how calibrated parameters drift across windows (MA short/long windows, Kalman SNR, momentum lookback)
-5. **Returns distribution**: histogram of daily returns vs Normal fit
-6. **Trade diagnostics**: per-trade P&L, holding period distribution, win rate across windows
-
-The headline result for all three strategies is a Fisher combined p-value well above 0.05. For MA crossover and momentum (both of which search a parameter grid), the Reality Check p-value is also non-significant after multiple-comparison correction. For the Kalman filter, which has no parameter grid, Reality Check does not apply. The cost sensitivity sweep shows that at zero cost and zero slippage some strategies approach significance; it disappears as you raise costs toward the 0.1%/5% baseline, which is the point - the apparent edge is friction-dependent.
+1. Equity curve - per-window portfolio values stitched vs buy-and-hold across the full test period
+2. Per-window Sharpe - strategy vs benchmark Sharpe for each test window, coloured vs that window's B&H (not the aggregate)
+3. Rolling drawdown - maximum drawdown at each point across the full test period
+4. Parameter evolution - how calibrated parameters drift across windows (MA windows, Kalman SNR, momentum lookback)
+5. Returns distribution - histogram of daily returns vs Normal fit
+6. Trade diagnostics - per-trade P&L, holding period distribution, win rate by window
 
 See [docs/reproducibility.md](docs/reproducibility.md) for environment details,
 [docs/methodology.md](docs/methodology.md) for statistical methodology,
 [docs/architecture.md](docs/architecture.md) for data flow and design decisions,
 and [docs/performance.md](docs/performance.md) for expected runtimes.
+
+---
+
+## Library usage
+
+The CLI is the main interface, but all components are importable. The public API is
+everything exported from `backtesting_engine.__init__`.
+
+**Run a single strategy programmatically:**
+
+```python
+from backtesting_engine import (
+    load_data, validate_data,
+    walk_forward, compute_benchmark,
+    MovingAverageStrategy, ExecutionConfig,
+)
+
+data = load_data("SPY", "1993-01-01", end_date="2024-12-31")
+validate_data(data, min_rows=1260)  # 5 years minimum for 3yr train + 1yr test
+
+execution = ExecutionConfig(
+    transaction_cost_rate=0.001,
+    slippage_factor=0.05,
+    signal_delay=1,
+)
+
+result = walk_forward(
+    data,
+    MovingAverageStrategy(),
+    training_window_years=3,
+    testing_window_years=1,
+    execution=execution,
+)
+
+benchmark = compute_benchmark(result, data, execution=execution)
+
+m = result.summary_metrics
+print(f"Sharpe:      {m.sharpe_ratio:.3f}")
+print(f"Fisher p:    {m.combined_p_value:.4f}")
+print(f"RC p (cash): {m.reality_check_p_value:.4f}")
+print(f"RC p (B&H):  {m.reality_check_bh_p_value:.4f}")
+print(f"IR:          {benchmark.information_ratio:.3f}")
+```
+
+**Write results to JSON for downstream use:**
+
+```python
+from backtesting_engine import write_summary_json
+from pathlib import Path
+
+write_summary_json(
+    [("MA Crossover", result, benchmark)],
+    Path("results/summary.json"),
+    ticker="SPY",
+    execution=execution,
+)
+```
+
+**Compare two strategies:**
+
+```python
+from backtesting_engine import KalmanFilterStrategy, MomentumStrategy
+
+kalman_result = walk_forward(data, KalmanFilterStrategy(), execution=execution)
+momentum_result = walk_forward(data, MomentumStrategy(), execution=execution)
+
+for name, res in [("MA", result), ("Kalman", kalman_result), ("Momentum", momentum_result)]:
+    m = res.summary_metrics
+    print(f"{name:10s}  sharpe={m.sharpe_ratio:.3f}  fisher_p={m.combined_p_value:.4f}")
+```
+
+The `ExecutionConfig` defaults (cost=0.1%, slippage=5%, delay=1) match the CLI
+defaults. Zero-friction runs require an explicit
+`ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0)`.
 
 ---
 
@@ -96,6 +166,7 @@ src/backtesting_engine/
 ├── metrics.py               Sharpe, Sortino, Calmar, Omega, block bootstrap p
 ├── benchmark.py             Buy-and-hold comparison, Information Ratio, paired t-test
 ├── multi_asset.py           Cross-asset validation: same strategy across ticker universe
+├── summary.py               JSON and CSV output serialisation (--summary-json/--summary-csv)
 ├── simulator.py             Reference simulator (readable baseline, zero-friction)
 ├── models.py                Dataclasses: Trade, SimulationResult, WindowResult, etc.
 ├── dashboard.py             6-panel interactive Plotly dashboard
@@ -144,11 +215,12 @@ Ordered from weakest to strongest:
 
 1. **Block bootstrap p (per window)** - does one window beat the zero-mean null?
 2. **Fisher combined p** - do the windows collectively beat the zero-mean null? (approximate: windows not independent)
-3. **White's RC p** - does the best parameter combination survive multiple-comparison correction?
-4. **Beats B&H fraction** - in what fraction of windows does strategy Sharpe exceed buy-and-hold?
-5. **Information Ratio + paired t-test** - does the strategy add consistent risk-adjusted value over buy-and-hold?
+3. **White's RC p (vs cash)** - does the best parameter combination survive multiple-comparison correction against the zero-return null?
+4. **White's RC p (vs B&H)** - does the best parameter combination survive multiple-comparison correction against the buy-and-hold null? Resamples active returns (strategy minus B&H), so the test directly asks whether there is alpha after passive is available as the alternative. A strategy that beats cash (RC p vs cash is small) but not B&H (RC p vs B&H is large) is capturing market beta, not generating alpha.
+5. **Beats B&H fraction** - in what fraction of windows does strategy Sharpe exceed buy-and-hold?
+6. **Information Ratio + paired t-test** - does the strategy add consistent risk-adjusted value over buy-and-hold?
 
-Tests 1–3 answer "is there any signal at all?" Tests 4–5 answer "does it matter in practice?" The headline claim uses 4 and 5.
+Tests 1–4 answer "is there any signal at all?" Tests 5–6 answer "does it matter in practice?" The headline claim uses 5 and 6.
 
 ---
 
@@ -173,6 +245,14 @@ backtesting-engine [options]
                                        Set explicitly for fully reproducible results.
 --no-cache                             Force fresh data download
 --costs-only                           Run cost sensitivity sweep only
+--summary-json PATH                    Write JSON summary to PATH (all MetricsResult
+                                       and BenchmarkResult fields, one entry per strategy)
+--summary-csv PATH                     Write CSV summary to PATH (same data, flattened,
+                                       one row per strategy)
+--no-dashboard                         Skip all HTML dashboard generation
+                                       (results still printed to stdout)
+--workers N                            Parallel workers for cost sensitivity sweep
+                                       (default: 1; -1 uses all cores; increase on Linux/macOS)
 ```
 
 Cross-asset validation runs as a separate command:
@@ -181,6 +261,8 @@ Cross-asset validation runs as a separate command:
 backtesting-multi [options]
 
 --tickers TICKER [TICKER ...]          Tickers to test (default: SPY QQQ TLT GLD)
+--strategy {ma,kalman,momentum,all}    Strategy to run on each ticker (default: ma)
+                                       'all' runs all three in sequence
 --start YYYY-MM-DD                     Start date (default: 2005-01-01)
 --end YYYY-MM-DD                       End date, inclusive (default: today)
 --cost RATE                            Transaction cost per side (default: 0.001)
@@ -190,6 +272,7 @@ backtesting-multi [options]
 --test-years N                         Test window in years (default: 1)
 --output-dir DIR                       Output directory (default: .)
 --seed N                               Bootstrap random seed (default: 42)
+--no-dashboard                         Skip per-ticker dashboard generation
 ```
 
 ---
@@ -199,17 +282,22 @@ backtesting-multi [options]
 ```bash
 make test     # full suite
 make check    # lint + typecheck + tests
-make run-multi  # cross-asset comparison (SPY, QQQ, TLT, GLD)
 ```
 
-Test coverage (413 tests, `make test`) includes: execution model correctness (slippage, delay, backward compat), position sizing invariant (no negative cash), block bootstrap null centring, RC flat-cash window parity (Fisher and RC cover the same windows), RC boundary carry-over parity, benchmark cost and slippage parity, per-window benchmark Sharpe accuracy, cross-asset validation (graceful ticker failure, result types, comparison table), `_fmt_metric` infinite-value safety, `--end` inclusive date offset, runtime `_min_rows` validation, yfinance retry handling, and Windows UTF-8 portability.
+470 tests across unit, integration, and CLI layers. Key correctness invariants covered:
+
+- Execution model: slippage, signal delay, backward compat
+- Position sizing: no negative cash after any trade sequence
+- Block bootstrap: null centring (p ≈ 0.5 for zero-signal series)
+- Reality Check: flat-cash window parity; boundary carry-over parity
+- Benchmark: cost/slippage parity; per-window Sharpe accuracy
+- Data ingestion: yfinance retry logic; ex-dividend clip; missing column handling
+- CLI: `--end` inclusive offset; `--no-dashboard` suppression; `--workers` forwarding
 
 ---
 
 ## Known limitations
 
-- Single-asset focus for the main CLI. `make run-multi` tests four asset classes (SPY, QQQ, TLT, GLD) but only with MA crossover - Kalman and momentum cross-asset aren't implemented.
-- **Reality Check null is cash, not buy-and-hold.** White's RC tests whether the best strategy beats zero return. A strategy can produce a low RC p-value while still underperforming B&H. Resampling active returns (strategy minus B&H) rather than raw returns would directly address this - it's not implemented here.
 - Fisher combination is approximate because walk-forward windows are not fully independent.
 - Bootstrap block length is fixed at √n. Optimal length depends on autocorrelation structure (Politis & White 2004).
 - yfinance data can have revision errors the validator does not catch.
@@ -220,15 +308,13 @@ Full discussion in [docs/methodology.md](docs/methodology.md).
 
 ## What I would do next
 
-This project is frozen at v0.8.0. Items I'd pursue with more time:
+**EM algorithm for Kalman MLE.** Nelder-Mead is embarrassingly slow for the local-level model - it re-runs the full Kalman filter on every function evaluation, which means ~2,000 filter passes per walk-forward window. The EM algorithm has a closed-form E-step for this model; it should converge in maybe 30 iterations. The math is in Harvey (1989), chapter 4. I didn't implement it because Nelder-Mead was correct first and I didn't want to introduce a second calibration path until the first one was well-tested.
 
-**Benchmark-relative Reality Check** is the biggest methodological gap. The RC null is cash. Resampling active returns (strategy minus B&H) rather than raw returns would directly test whether the strategy adds value over passive - that's the right question for an equity strategy.
+**Automatic block length selection.** The √n block length is a reasonable heuristic but it's not calibrated to the actual autocorrelation structure of the series. Politis & White (2004) give a data-driven method. The main reason I didn't do this is that the optimal block length varies by strategy and asset, which would make the RC results harder to interpret across runs - you'd need to report the block length alongside the p-value.
 
-**EM algorithm for Kalman MLE** would make `make run-kalman` significantly faster. Nelder-Mead re-runs the full filter on every function evaluation. The EM algorithm has a closed-form E-step for the local level model; it would cut the ~2,000 filter passes per window down to maybe 30.
+**More assets and longer history.** The 1993 start date is driven by SPY's inception. Running on individual equities with longer histories (or on futures, where history goes back further) would let you test whether the null result holds outside ETFs. My prior is that it does, but I haven't verified it.
 
-**Full cross-asset validation** for all three strategies. Right now `make run-multi` only runs MA crossover across SPY/QQQ/TLT/GLD. If the null holds for Kalman and momentum too, that's a meaningfully stronger conclusion.
-
-**Optimal block length** via the Politis-White (2004) spectral method. The √n heuristic is reasonable but not calibrated to the actual autocorrelation structure of each series.
+**Live paper trading integration.** The walk-forward architecture naturally supports a "retrain on all available history, generate next signal" mode that could feed into a paper trading account. The signal generation path already exists; you'd need a broker API connection and some state management for open positions.
 
 ---
 

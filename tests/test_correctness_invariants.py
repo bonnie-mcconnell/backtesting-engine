@@ -1,10 +1,13 @@
 """
-Regression tests for the five correctness bugs fixed in the v0.5.x pass.
+Correctness invariants: tests that guard against specific failure modes that
+are easy to introduce and hard to catch with generic assertions.
 
-Each test is paired with the specific failure mode it guards against, documented
-in the test body. The bugs were: negative cash from naive position sizing, benchmark
-using a hardcoded cost rate, flat-cash windows excluded from summary, momentum RC
-evaluating all candidates with the fitted lookback, bootstrap null not centred.
+Each test documents exactly what breaks if the invariant is violated:
+  - negative cash from naive position sizing
+  - benchmark using a hardcoded cost rate instead of ExecutionConfig
+  - flat-cash windows excluded from the summary (biases Sharpe upward)
+  - momentum RC evaluating all candidates with the fitted lookback (wrong)
+  - bootstrap null not centred (p ≈ 0.5 for any positive-drift series)
 """
 
 import math

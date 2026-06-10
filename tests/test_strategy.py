@@ -12,6 +12,7 @@ from helpers import make_oscillating_data
 
 from backtesting_engine.strategy.base import returns_from_signals
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.walk_forward import walk_forward
 
 
 def _make_data(prices: list[float], start: str = "2020-01-01") -> pd.DataFrame:
@@ -27,8 +28,8 @@ def _trending_data(n: int = 504, start_price: float = 100.0) -> pd.DataFrame:
 
 class TestSignalGeneration:
     def test_golden_cross_produces_buy_signal(self) -> None:
-        # Phase 1 (60 bars): flat at 100 - short and long MA converge near 100.
-        # Phase 2 (60 bars): sharp rise to 130 - short MA (10) rises faster than
+        # bars 0-59: flat at 100, both MAs converge - no crossover signal
+        # bars 60-119: sharp rise to 130 - short MA (10) rises faster than
         # long MA (30), crossing above it and producing a buy signal.
         prices = list(np.linspace(100.0, 100.0, 60)) + list(np.linspace(100.0, 130.0, 60))
         data = _make_data(prices)
@@ -37,8 +38,8 @@ class TestSignalGeneration:
         assert 1 in signals.values
 
     def test_death_cross_produces_sell_signal(self) -> None:
-        # Phase 1 (80 bars): rising prices - golden cross fires, short above long.
-        # Phase 2 (80 bars): sharp drop - short MA falls back below long MA (death cross).
+        # bars 0-79: rising prices - golden cross fires, short above long
+        # bars 80-159: sharp drop - short MA falls back below long MA (death cross)
         prices = list(np.linspace(100.0, 130.0, 80)) + list(np.linspace(130.0, 80.0, 80))
         data = _make_data(prices)
         strategy = MovingAverageStrategy(short_window=10, long_window=30)
@@ -244,14 +245,13 @@ class TestPositionCarryOver:
         test = data.iloc[50:120]
 
         signals = strategy.generate_signals_with_context(context, test)
-        # First signal should not be a buy from carry-over
-        # (strategy is flat at boundary - no position to carry)
-        # It may be 0 or eventually 1 when a real cross fires in test, but not forced
-        # We verify it's not artificially injected when flat
-        assert signals.iloc[0] != 1 or (
-            # Allow if a genuine golden cross fires at bar 0 naturally
-            len(signals) > 1
-        ), "Should not inject buy signal when strategy is flat at boundary"
+        # Verify no buy signal is injected at bar 0. The strategy is flat at the
+        # boundary (death cross fired in context, short MA < long MA). Carry-over
+        # only fires when short MA > long MA at the boundary, so bar 0 must be 0.
+        assert signals.iloc[0] == 0, (
+            "Should not inject carry-over buy when strategy is flat (short MA < long MA) "
+            f"at the context/test boundary. Got signals.iloc[0]={signals.iloc[0]}."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -392,3 +392,290 @@ class TestReturnsFromSignals:
         price_returns = np.diff(close) / close[:-1]
         expected = np.array([1.0, 1.0, 0.0]) * price_returns
         np.testing.assert_allclose(result, expected, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+
+class TestRCBoundaryCarryOver:
+    """
+    candidate_test_returns() must inject boundary carry-over identically to
+    generate_signals_with_context(). Without this, the selected strategy and
+    the RC candidate universe are evaluated under different state assumptions.
+    """
+
+    def _make_trending_data(self, n: int = 252) -> pd.DataFrame:
+        """Strongly trending data so MAs stay long for most of the period."""
+        dates = pd.date_range("2015-01-01", periods=n, freq="B")
+        close = np.array([100.0 + i * 0.3 for i in range(n)])
+        return pd.DataFrame({"close": close}, index=dates)
+
+    def test_ma_candidate_returns_use_same_context(self) -> None:
+        """After fitting MA, candidate_test_returns with context should apply
+        boundary carry-over the same way generate_signals_with_context does."""
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+
+        data = self._make_trending_data(252)
+        train = data.iloc[:180]
+        test = data.iloc[180:]
+        context = train.iloc[-201:]  # enough context for MA warmup
+
+        strategy = MovingAverageStrategy()
+        strategy.fit(train)
+
+        # Get signals from generate_signals_with_context
+        gswc_signals = strategy.generate_signals_with_context(context, test)
+
+        # Get candidate returns - the selected params should be in the dict
+        candidates = strategy.candidate_test_returns(test, context)
+        selected_key = (strategy.short_window_, strategy.long_window_)
+
+        assert selected_key in candidates
+        assert len(gswc_signals) == len(test)
+        assert len(candidates[selected_key]) == len(test) - 1, (
+            "Candidate return series length must be len(test) - 1"
+        )
+
+    def test_momentum_candidate_returns_inject_boundary(self) -> None:
+        """Momentum candidate_test_returns must apply boundary carry-over."""
+        from backtesting_engine.strategy.momentum import MomentumStrategy
+
+        data = self._make_trending_data(300)
+        train = data.iloc[:240]
+        test = data.iloc[240:]
+        strategy = MomentumStrategy()
+        strategy.fit(train)
+
+        lb = strategy.lookback_
+        context = train.iloc[-lb:]
+
+        candidates = strategy.candidate_test_returns(test, context)
+        # All candidates must return arrays of length len(test) - 1
+        for k, v in candidates.items():
+            assert len(v) == len(test) - 1, (
+                f"Candidate {k} return series has wrong length: {len(v)} != {len(test)-1}"
+            )
+
+
+@pytest.fixture(scope="class")
+def slippage_parity_data():
+    """
+    Shared walk_forward result for TestBenchmarkSlippageParity.
+
+    The test_compute_benchmark_passes_slippage_to_bh test needs a walk_forward
+    result to call compute_benchmark on. Using a class-scoped fixture avoids
+    running the full MA grid search once per test method.
+    """
+    from backtesting_engine.execution import ExecutionConfig
+    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+
+    data = make_oscillating_data(756, with_high_low=True)
+    exec_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.05, signal_delay=0)
+    result = walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=1, testing_window_years=1,
+        execution=exec_slip,
+    )
+    return data, result, exec_slip
+
+class TestFormatParams:
+    """
+    Each strategy owns its own format_params() - main.py must not hard-code
+    strategy-specific knowledge for parameter formatting.
+
+    If you add a new strategy, add a test here verifying its format_params()
+    output is human-readable and non-empty after fit().
+    """
+
+    def _make_data(self, n: int = 300) -> "pd.DataFrame":
+        import pandas as pd
+        dates = pd.date_range("2020-01-01", periods=n, freq="B")
+        close = pd.Series([100.0 + i * 0.1 for i in range(n)], index=dates)
+        return pd.DataFrame({"close": close})
+
+    def test_ma_format_params_looks_like_ma_short_slash_long(self) -> None:
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        strategy = MovingAverageStrategy()
+        strategy.fit(self._make_data())
+        result = strategy.format_params()
+        assert result.startswith("MA(") and "/" in result and result.endswith(")")
+
+    def test_ma_format_params_contains_calibrated_values(self) -> None:
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        strategy = MovingAverageStrategy()
+        strategy.fit(self._make_data())
+        result = strategy.format_params()
+        assert str(strategy.short_window_) in result
+        assert str(strategy.long_window_) in result
+
+    def test_kalman_format_params_contains_snr(self) -> None:
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+        strategy = KalmanFilterStrategy()
+        strategy.fit(self._make_data())
+        result = strategy.format_params()
+        assert result.startswith("SNR=")
+
+    def test_momentum_format_params_contains_lookback(self) -> None:
+        from backtesting_engine.strategy.momentum import MomentumStrategy
+        strategy = MomentumStrategy()
+        strategy.fit(self._make_data())
+        result = strategy.format_params()
+        assert result.startswith("MOM(")
+        assert str(strategy.lookback_) in result
+
+    def test_base_default_format_params_is_empty_for_no_params(self) -> None:
+        import pandas as pd
+
+        from backtesting_engine.strategy.base import BaseStrategy
+
+        class ParameterFree(BaseStrategy):
+            def fit(self, train_data: pd.DataFrame) -> "ParameterFree":
+                return self
+            def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+                return pd.Series(0, index=data.index)
+
+        assert ParameterFree().format_params() == ""
+
+    def test_walk_forward_stores_formatted_params_on_window(
+        self, wf_result_504: object
+    ) -> None:
+        """formatted_params must be set on every non-empty window.
+
+        Uses the shared wf_result_504 fixture (module scope) to avoid running a
+        redundant walk_forward with full MA grid search. The fixed-window MA result
+        still stores formatted_params correctly - it does not depend on grid search.
+        """
+        from backtesting_engine.models import BacktestResult
+        result = wf_result_504
+        assert isinstance(result, BacktestResult)
+        for w in result.valid_windows:
+            if w.simulation_result.trades:
+                assert w.formatted_params.startswith("MA("), (
+                    f"Expected MA(x/y) format, got: {w.formatted_params!r}"
+                )
+
+    def test_format_params_not_in_main_py_as_hardcoded_strategy_check(self) -> None:
+        """main.py must not contain strategy-specific parameter key names.
+
+        Checks both single-quote and double-quote forms to guard against
+        bypass via quote-style variation (e.g. active_params.get('snr') vs ["snr"]).
+        """
+        import pathlib
+        main_src = (
+            pathlib.Path(__file__).parent.parent / "src/backtesting_engine/main.py"
+        ).read_text(encoding="utf-8")
+        for key in ("short_window", "snr"):
+            for q in ('"', "'"):
+                assert f"{q}{key}{q}" not in main_src, (
+                    f"main.py contains {q}{key}{q} - strategy-specific knowledge that "
+                    f"belongs in the strategy's format_params() or param_evolution_spec(), "
+                    "not the orchestrator."
+                )
+
+class TestParamEvolutionSpec:
+    """
+    param_evolution_spec() is the strategy's contract for the dashboard
+    parameter evolution panel. It eliminates all isinstance checks and
+    hard-coded key names from dashboard.py.
+
+    If you add a new strategy, add a test here verifying its spec.
+    """
+
+    def _make_data(self, n: int = 300) -> "pd.DataFrame":
+        dates = pd.date_range("2020-01-01", periods=n, freq="B")
+        close = pd.Series([100.0 + i * 0.1 for i in range(n)], index=dates)
+        return pd.DataFrame({"close": close})
+
+    def test_ma_spec_has_two_entries(self) -> None:
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        s = MovingAverageStrategy()
+        s.fit(self._make_data())
+        spec = s.param_evolution_spec()
+        assert len(spec) == 2
+
+    def test_ma_spec_keys_match_active_params(self) -> None:
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        s = MovingAverageStrategy()
+        s.fit(self._make_data())
+        params = s.active_params()
+        for label, key in s.param_evolution_spec():
+            assert key in params, f"Spec key '{key}' not in active_params {params}"
+
+    def test_kalman_spec_has_two_entries(self) -> None:
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+        s = KalmanFilterStrategy()
+        s.fit(self._make_data())
+        spec = s.param_evolution_spec()
+        assert len(spec) == 2
+
+    def test_kalman_spec_keys_match_active_params(self) -> None:
+        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+        s = KalmanFilterStrategy()
+        s.fit(self._make_data())
+        params = s.active_params()
+        for label, key in s.param_evolution_spec():
+            assert key in params, f"Spec key '{key}' not in active_params {params}"
+
+    def test_momentum_spec_has_one_entry(self) -> None:
+        from backtesting_engine.strategy.momentum import MomentumStrategy
+        s = MomentumStrategy()
+        s.fit(self._make_data())
+        spec = s.param_evolution_spec()
+        assert len(spec) == 1
+
+    def test_momentum_spec_key_matches_active_params(self) -> None:
+        from backtesting_engine.strategy.momentum import MomentumStrategy
+        s = MomentumStrategy()
+        s.fit(self._make_data())
+        params = s.active_params()
+        for label, key in s.param_evolution_spec():
+            assert key in params, f"Spec key '{key}' not in active_params {params}"
+
+    def test_base_default_spec_is_empty_for_no_params(self) -> None:
+        from backtesting_engine.strategy.base import BaseStrategy
+
+        class ParameterFree(BaseStrategy):
+            def fit(self, train_data: pd.DataFrame) -> "ParameterFree":
+                return self
+            def generate_signals(self, data: pd.DataFrame) -> pd.Series:
+                return pd.Series(0, index=data.index)
+
+        assert ParameterFree().param_evolution_spec() == []
+
+    def test_walk_forward_stores_spec_on_window_result(
+        self, wf_result_504: object
+    ) -> None:
+        """param_evolution_spec must be set with 2 entries on every MA window.
+
+        Uses the shared wf_result_504 fixture (module scope). Fixed-window MA
+        still stores param_evolution_spec correctly via strategy.param_evolution_spec().
+        """
+        from backtesting_engine.models import BacktestResult
+        result = wf_result_504
+        assert isinstance(result, BacktestResult)
+        for w in result.valid_windows:
+            assert len(w.param_evolution_spec) == 2, (
+                f"Expected 2-entry MA spec, got: {w.param_evolution_spec}"
+            )
+
+    def test_dashboard_does_not_hardcode_short_window_or_snr(self) -> None:
+        """dashboard.py must not contain strategy-specific parameter key names.
+
+        Checks both single-quote and double-quote forms to guard against
+        bypass via quote-style variation.
+        """
+        import pathlib
+        dash_src = (
+            pathlib.Path(__file__).parent.parent
+            / "src/backtesting_engine/dashboard.py"
+        ).read_text(encoding="utf-8")
+        for key in ("short_window", "snr"):
+            for q in ('"', "'"):
+                assert f"{q}{key}{q}" not in dash_src, (
+                    f"dashboard.py contains {q}{key}{q} - strategy-specific knowledge "
+                    f"that belongs in the strategy's param_evolution_spec(), "
+                    "not the dashboard."
+                )

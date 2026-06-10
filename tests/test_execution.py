@@ -147,3 +147,115 @@ class TestBackwardCompatibility:
         result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
         assert result.portfolio_values is not None
         assert (result.portfolio_values > 0).all()
+
+
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+
+class TestExecutionDocstring:
+    """The execution docstring must describe current realistic defaults, not old zero-slippage."""
+
+    def test_docstring_mentions_current_defaults(self) -> None:
+        from backtesting_engine.execution import run_simulation_with_execution
+        doc = run_simulation_with_execution.__doc__ or ""
+        # Must mention realistic defaults, not old "zero slippage, zero delay".
+        assert "0.1%" in doc or "cost=0.1" in doc or "realistic" in doc or "0.05" in doc, (
+            "Docstring should describe current realistic defaults, not old zero-slippage model"
+        )
+        assert "zero slippage, zero delay" not in doc.lower(), (
+            "Docstring must not describe old zero-friction defaults as the standard mode"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Source file encoding (Windows portability)
+
+
+
+
+class TestCostSweepSignalDelay:
+    """
+    cost_sensitivity_sweep must honour the signal_delay parameter.
+
+    Before the fix, _sweep_worker hardcoded signal_delay=1, so a sweep
+    run with delay=0 silently used delay=1 for every cell.
+    """
+
+    def test_delay_zero_sharpe_differs_from_delay_one(self) -> None:
+        """Sharpe must differ between delay=0 and delay=1 - fill timing changes outcomes."""
+        import math
+
+        from helpers import make_oscillating_data
+
+        from backtesting_engine.execution import ExecutionConfig
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        from backtesting_engine.walk_forward import walk_forward
+
+        data = make_oscillating_data(756, with_high_low=True)
+
+        r0 = walk_forward(
+            data, MovingAverageStrategy(),
+            training_window_years=1, testing_window_years=1,
+            execution=ExecutionConfig(signal_delay=0), bootstrap_seed=42,
+        )
+        r1 = walk_forward(
+            data, MovingAverageStrategy(),
+            training_window_years=1, testing_window_years=1,
+            execution=ExecutionConfig(signal_delay=1), bootstrap_seed=42,
+        )
+        s0 = r0.summary_metrics.sharpe_ratio
+        s1 = r1.summary_metrics.sharpe_ratio
+        assert not math.isnan(s0) and not math.isnan(s1)
+        assert s0 != s1, (
+            "delay=0 and delay=1 produced identical Sharpe ratios - "
+            "signal_delay is not affecting simulation results."
+        )
+
+    def test_sweep_signal_delay_matches_direct_walk_forward(self) -> None:
+        """
+        Fisher p from cost_sensitivity_sweep(signal_delay=0) must match a direct
+        walk_forward(signal_delay=0) call on the same data and seed.
+
+        If _sweep_worker hardcoded delay=1, the sweep p-value would match the
+        delay=1 run, not the delay=0 run.
+        """
+        import math
+
+        from helpers import make_oscillating_data
+
+        from backtesting_engine.execution import ExecutionConfig, cost_sensitivity_sweep
+        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+        from backtesting_engine.walk_forward import walk_forward
+
+        data = make_oscillating_data(756, with_high_low=True)
+
+        direct = walk_forward(
+            data, MovingAverageStrategy(),
+            training_window_years=1, testing_window_years=1,
+            execution=ExecutionConfig(
+                transaction_cost_rate=0.001,
+                slippage_factor=0.05,
+                signal_delay=0,
+            ),
+            bootstrap_seed=42,
+        )
+        direct_p = direct.summary_metrics.combined_p_value
+
+        sweep = cost_sensitivity_sweep(
+            data, MovingAverageStrategy(),
+            cost_rates=[0.001],
+            slippage_factors=[0.05],
+            training_window_years=1,
+            testing_window_years=1,
+            signal_delay=0,
+            bootstrap_seed=42,
+        )
+        sweep_p = sweep[(0.001, 0.05)]
+
+        assert not math.isnan(sweep_p), "sweep returned NaN p-value"
+        assert abs(sweep_p - direct_p) < 0.001, (
+            f"sweep p={sweep_p:.4f} does not match direct walk_forward p={direct_p:.4f}. "
+            "signal_delay is probably not reaching _sweep_worker correctly."
+        )

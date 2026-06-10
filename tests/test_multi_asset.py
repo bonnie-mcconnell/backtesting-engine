@@ -19,6 +19,7 @@ from backtesting_engine.benchmark import BenchmarkResult
 from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult
 from backtesting_engine.multi_asset import (
+    _STRATEGY_MAP,
     _print_comparison_table,
     run_multi_asset,
 )
@@ -225,6 +226,233 @@ class TestMultiAssetModule:
 
         old_argv = sys.argv
         sys.argv = ["multi_asset", "--help"]
+        with pytest.raises(SystemExit) as exc_info:
+            _parse_args()
+        assert exc_info.value.code == 0
+        sys.argv = old_argv
+
+
+class TestStrategyParameter:
+    """
+    Tests for the --strategy flag: ma, kalman, momentum, all.
+
+    All tests mock load_data to avoid network access. Walk-forward runs on
+    synthetic oscillating data (same fixture as above).
+    """
+
+    def test_default_strategy_is_ma(self, tmp_path: Path) -> None:
+        # Default behaviour must be unchanged from v0.9.x - no strategy arg.
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+            )
+        assert "SPY" in results
+
+    def test_strategy_ma_keys_by_ticker(self, tmp_path: Path) -> None:
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY", "QQQ"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="ma",
+            )
+        # Single strategy: keys are plain tickers.
+        assert set(results.keys()) == {"SPY", "QQQ"}
+
+    def test_strategy_momentum_runs(self, tmp_path: Path) -> None:
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="momentum",
+            )
+        assert "SPY" in results
+        result, benchmark = results["SPY"]
+        assert isinstance(result, BacktestResult)
+        assert isinstance(benchmark, BenchmarkResult)
+
+    def test_strategy_kalman_runs(self, tmp_path: Path) -> None:
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="kalman",
+            )
+        assert "SPY" in results
+        result, _ = results["SPY"]
+        assert math.isfinite(result.summary_metrics.sharpe_ratio)
+
+    def test_strategy_all_keys_by_ticker_colon_strategy(self, tmp_path: Path) -> None:
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="all",
+            )
+        expected_keys = {"SPY:ma", "SPY:kalman", "SPY:momentum"}
+        assert set(results.keys()) == expected_keys, (
+            f"strategy='all' must produce keys {{ticker}}:{{strategy_short}}. "
+            f"Got: {set(results.keys())}"
+        )
+
+    def test_strategy_all_result_count(self, tmp_path: Path) -> None:
+        # Two tickers × three strategies = six result entries.
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY", "QQQ"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="all",
+            )
+        assert len(results) == 6
+
+    def test_strategy_all_results_are_correct_types(self, tmp_path: Path) -> None:
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="all",
+            )
+        for key, (result, benchmark) in results.items():
+            assert isinstance(result, BacktestResult), f"{key}: expected BacktestResult"
+            assert isinstance(benchmark, BenchmarkResult), f"{key}: expected BenchmarkResult"
+
+    def test_invalid_strategy_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Unknown strategy"):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="bad_strategy",
+            )
+
+    def test_strategy_map_contains_all_three(self) -> None:
+        # Regression guard: _STRATEGY_MAP must contain exactly the three documented strategies.
+        assert set(_STRATEGY_MAP.keys()) == {"ma", "kalman", "momentum"}
+
+    def test_dashboard_filename_includes_strategy(self, tmp_path: Path) -> None:
+        # Dashboards are mocked out (build_dashboard may fail without real data
+        # in some test environments), but the filename is derived before the call.
+        # Verify naming by checking what gets written when build_dashboard is patched.
+        written_paths: list[str] = []
+
+        def _capture_dash(result, path, **kwargs):  # type: ignore[no-untyped-def]
+            written_paths.append(str(path))
+
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
+             patch("backtesting_engine.multi_asset.validate_data"), \
+             patch("backtesting_engine.multi_asset.build_dashboard", side_effect=_capture_dash):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                strategy="momentum",
+            )
+
+        assert len(written_paths) == 1
+        assert "momentum" in written_paths[0]
+        assert "spy" in written_paths[0].lower()
+
+    def test_comparison_table_with_strategy_label(self, capsys: pytest.CaptureFixture) -> None:
+        # _print_comparison_table must render the strategy_label in the header.
+        import pandas as pd
+
+        from backtesting_engine.models import MetricsResult, SimulationResult, WindowResult
+
+        dates = pd.date_range("2010-01-01", periods=2, freq="B")
+        pv = pd.Series([100000.0, 101000.0], index=dates)
+        sim = SimulationResult(trades=[], portfolio_values=pv, message="")
+        m = MetricsResult(
+            sharpe_ratio=0.5, sortino_ratio=0.6, max_drawdown=-0.1,
+            calmar_ratio=1.0, omega_ratio=1.1, p_value=0.3,
+            combined_p_value=0.25, reality_check_p_value=float("nan"),
+            trade_count=5,
+        )
+        w = WindowResult(
+            train_start=dates[0], train_end=dates[0],
+            test_start=dates[0], test_end=dates[1],
+            simulation_result=sim, metrics_result=m,
+        )
+        br = BacktestResult(
+            strategy_name="MomentumStrategy",
+            window_results=[w],
+            summary_metrics=m,
+        )
+        bm = BenchmarkResult(
+            benchmark_sharpe=0.4, benchmark_sortino=0.5,
+            benchmark_max_drawdown=-0.12, information_ratio=0.2,
+            sharpe_diff_t_stat=1.1, sharpe_diff_p_value=0.3,
+            strategy_beats_benchmark_fraction=0.5,
+            per_window_benchmark_sharpes=[0.4],
+        )
+        _print_comparison_table({"SPY": (br, bm)}, strategy_label="Momentum")
+        captured = capsys.readouterr()
+        assert "Momentum" in captured.out
+
+    def test_help_shows_strategy_choices(self) -> None:
+        import sys
+
+        from backtesting_engine.multi_asset import _parse_args
+        old_argv = sys.argv
+        sys.argv = ["backtesting-multi", "--help"]
         with pytest.raises(SystemExit) as exc_info:
             _parse_args()
         assert exc_info.value.code == 0

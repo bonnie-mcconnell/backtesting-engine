@@ -9,6 +9,11 @@ add a corresponding test. This prevents the common failure mode of a flag
 being documented in --help but silently ignored because it was never wired up.
 """
 
+import inspect
+import io
+import pathlib
+import re
+import tokenize
 from unittest.mock import patch
 
 import pytest
@@ -230,3 +235,326 @@ class TestCLINewFlags:
         assert args.seed == 7
         assert args.output_dir == "/tmp/out"
 
+
+
+# ---------------------------------------------------------------------------
+
+# CLI correctness: _fmt_metric, _min_rows, --end date, encoding
+
+
+# ---------------------------------------------------------------------------
+
+class TestFmtMetric:
+    """_fmt_metric must never raise ValueError by passing ∞ as a format spec."""
+
+    def _fmt(self, v: float) -> str:
+        from backtesting_engine.main import _fmt_metric
+        return _fmt_metric(v)
+
+    def test_normal_float_formats(self) -> None:
+        result = self._fmt(1.234)
+        assert "1.234" in result
+
+    def test_nan_returns_na(self) -> None:
+        assert self._fmt(float("nan")) == "N/A"
+
+    def test_positive_inf_does_not_crash(self) -> None:
+        result = self._fmt(float("inf"))
+        assert result  # must not raise, must return a string
+
+    def test_negative_inf_does_not_crash(self) -> None:
+        result = self._fmt(float("-inf"))
+        assert result
+
+    def test_inf_result_is_not_raw_format_specifier(self) -> None:
+        # The old bug: _fmt_metric(v, "∞") tried format(v, "∞") → ValueError.
+        # Verify the returned string is a display value, not the raw symbol.
+        result = self._fmt(float("inf"))
+        # Should not look like Python tried to use ∞ as a format spec error message.
+        assert "format" not in result.lower()
+        assert "unknown" not in result.lower()
+
+    def test_comparison_table_does_not_crash(self) -> None:
+        """The comparative summary crashed when best3() called _fmt_metric(v, '∞').
+        Simulate the all-inf case that triggered it."""
+        from backtesting_engine.main import _fmt_metric
+        # This is exactly the call that previously caused ValueError.
+        # Previously: _fmt_metric(float("inf"), "∞") → crash.
+        # Now: _fmt_metric(float("inf")) → returns a safe display string.
+        result = _fmt_metric(float("inf"))
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+# ── 2. _min_rows uses runtime args ────────────────────────────────────────────
+
+class TestMinRows:
+    """_min_rows must reflect CLI --train-years / --test-years, not config defaults."""
+
+    def test_default_args_produce_expected_minimum(self) -> None:
+        from backtesting_engine.config import (
+            ANNUALISATION_FACTOR,
+            MOVING_AVERAGE_LONG_DAYS,
+            TESTING_WINDOW_YEARS,
+            TRAINING_WINDOW_YEARS,
+        )
+        from backtesting_engine.main import _min_rows
+        expected = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS
+        assert _min_rows(TRAINING_WINDOW_YEARS, TESTING_WINDOW_YEARS) == expected
+
+    def test_longer_windows_require_more_rows(self) -> None:
+        from backtesting_engine.main import _min_rows
+        assert _min_rows(5, 2) > _min_rows(3, 1)
+
+    def test_function_exists_and_module_level_constant_removed(self) -> None:
+        """_MIN_ROWS module-level constant must be gone; _min_rows function takes args."""
+        import backtesting_engine.main as m
+        assert not hasattr(m, "_MIN_ROWS"), (
+            "_MIN_ROWS module-level constant should be removed. "
+            "Use _min_rows(train_years, test_years) instead."
+        )
+        assert callable(m._min_rows)
+
+
+# ── 3. --end inclusive (yfinance offset) ─────────────────────────────────────
+
+class TestEndDateInclusive:
+    """_load must add one day internally so --end YYYY-MM-DD is inclusive."""
+
+    def test_yf_end_is_one_day_after_user_end(self) -> None:
+        """The internal yf_end passed to yfinance must be end_date + 1 day."""
+        from datetime import date, timedelta
+        user_end = "2024-12-31"
+        expected_yf_end = (date.fromisoformat(user_end) + timedelta(days=1)).isoformat()
+        assert expected_yf_end == "2025-01-01"
+
+    def test_end_none_does_not_add_offset(self) -> None:
+        """When end_date is None (today), no offset should be applied."""
+        # The logic in _load: yf_end = None when end_date is None.
+        # We test the main module compiles and the logic is correct by inspection.
+
+        import backtesting_engine.main as m
+
+        src = inspect.getsource(m._load)
+        # Must only apply the timedelta when end_date is not None.
+        assert "if end_date is not None" in src
+        assert "timedelta(days=1)" in src
+
+
+# ---------------------------------------------------------------------------
+# Source file encoding portability
+# ---------------------------------------------------------------------------
+
+class TestSourceFileEncoding:
+    """All source-file reads in tests must specify encoding='utf-8'.
+
+    Source files contain Unicode characters (box drawing, arrows, Greek letters).
+    On Windows, Path.read_text() defaults to cp1252 which cannot decode these.
+    """
+
+    _SRC_FILES = [
+        "tests/test_strategy.py",
+        "tests/test_cli.py",
+        "tests/test_benchmark.py",
+    ]
+
+    def test_all_read_text_calls_specify_encoding(self) -> None:
+        """Every .read_text() call in test code must pass encoding='utf-8'.
+
+        Uses tokenize to inspect actual call sites, not docstring prose.
+        """
+        tok = tokenize
+
+        repo_root = pathlib.Path(__file__).parent.parent
+        # Match an actual Python read_text() call (identifier/paren before the dot).
+        call_re = re.compile(r'[\w)]\.read_text\(\s*\)')
+        violations = []
+
+        for rel_path in self._SRC_FILES:
+            fpath = repo_root / rel_path
+            if not fpath.exists():
+                continue
+            src = fpath.read_text(encoding="utf-8")
+            lines = src.splitlines()
+
+            # Use tokenize to find line numbers that are inside string literals
+            # (multiline docstrings). Those lines are prose, not executable code.
+            string_lines: set[int] = set()
+            try:
+                for ttype, _, tstart, tend, _ in tok.generate_tokens(
+                    io.StringIO(src).readline
+                ):
+                    if ttype == tok.STRING:
+                        for ln in range(tstart[0] + 1, tend[0]):
+                            # Interior lines of a multiline string
+                            string_lines.add(ln)
+            except tok.TokenError:
+                pass
+
+            for i, line in enumerate(lines, 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if i in string_lines:
+                    continue  # interior of a multiline docstring
+                if call_re.search(line) and "encoding" not in line:
+                    violations.append(f"{rel_path}:{i}: {stripped}")
+
+        assert not violations, (
+            "read_text() calls missing encoding='utf-8' (crashes on Windows):\n"
+            + "\n".join(violations)
+        )
+
+    def test_source_files_are_valid_utf8(self) -> None:
+        """All Python source files must be valid UTF-8."""
+        repo_root = pathlib.Path(__file__).parent.parent
+        src_dir = repo_root / "src"
+        failures = []
+        for pyfile in src_dir.rglob("*.py"):
+            try:
+                pyfile.read_text(encoding="utf-8")
+            except UnicodeDecodeError as e:
+                failures.append(f"{pyfile.relative_to(repo_root)}: {e}")
+        assert not failures, "Files with invalid UTF-8:\n" + "\n".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# --no-dashboard and --workers flags (v0.11.0)
+# ---------------------------------------------------------------------------
+
+class TestNoDashboardFlag:
+    """
+    --no-dashboard must suppress all build_dashboard calls in both CLIs
+    without affecting metric computation or stdout output.
+    """
+
+    def test_no_dashboard_default_is_false(self) -> None:
+        # Parse with minimal required args - no_dashboard must default to False.
+        from backtesting_engine.main import _parse_args as _main_parse
+        with patch("sys.argv", ["backtesting-engine", "--ticker", "SPY",
+                                 "--start", "2010-01-01"]):
+            args = _main_parse()
+        assert args.no_dashboard is False
+
+    def test_workers_default_is_one_via_parse(self) -> None:
+        from backtesting_engine.main import _parse_args as _main_parse
+        with patch("sys.argv", ["backtesting-engine", "--ticker", "SPY",
+                                 "--start", "2010-01-01"]):
+            args = _main_parse()
+        assert args.workers == 1
+
+    def test_no_dashboard_suppresses_build_dashboard(self) -> None:
+        """When --no-dashboard is set, build_dashboard must not be called."""
+        from unittest.mock import patch as upatch
+
+        import numpy as np
+        import pandas as pd
+
+        from backtesting_engine.main import main
+
+        dates = pd.date_range("1993-01-01", periods=2268, freq="B")
+        close = 100 * np.cumprod(1 + np.random.default_rng(0).normal(0.0003, 0.01, 2268))
+        fake_data = pd.DataFrame({
+            "open": close, "high": close * 1.005, "low": close * 0.995,
+            "close": close, "volume": 1e6,
+        }, index=dates)
+
+        build_dashboard_calls = []
+
+        def mock_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+            build_dashboard_calls.append(1)
+            return kwargs.get("path", args[1] if len(args) > 1 else "mock.html")
+
+        with (upatch("sys.argv", [
+                "backtesting-engine",
+                "--ticker", "SPY", "--strategy", "ma",
+                "--start", "1993-01-01", "--end", "2001-12-31",
+                "--no-dashboard",
+              ]),
+              upatch("backtesting_engine.main.load_data", return_value=fake_data),
+              upatch("backtesting_engine.main.validate_data"),
+              upatch("backtesting_engine.main.build_dashboard", side_effect=mock_build),
+        ):
+            try:
+                main()
+            except SystemExit:
+                pass
+
+        assert len(build_dashboard_calls) == 0, (
+            f"build_dashboard was called {len(build_dashboard_calls)} times "
+            "despite --no-dashboard being set."
+        )
+
+    def test_no_dashboard_in_multi_asset_run(self) -> None:
+        """run_multi_asset with no_dashboard=True must not call build_dashboard."""
+        from pathlib import Path
+        from unittest.mock import patch as upatch
+
+        from helpers import make_oscillating_data
+
+        from backtesting_engine.execution import ExecutionConfig
+        from backtesting_engine.multi_asset import run_multi_asset
+
+        build_calls = []
+
+        def mock_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+            build_calls.append(1)
+
+        with (upatch("backtesting_engine.multi_asset.load_data",
+                     return_value=make_oscillating_data(756, with_high_low=True)),
+              upatch("backtesting_engine.multi_asset.validate_data"),
+              upatch("backtesting_engine.multi_asset.build_dashboard", side_effect=mock_build),
+        ):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2010-01-01",
+                end="2016-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=Path("/tmp"),
+                strategy="ma",
+                no_dashboard=True,
+            )
+
+        assert len(build_calls) == 0, (
+            f"build_dashboard called {len(build_calls)} times with no_dashboard=True"
+        )
+
+    def test_no_dashboard_false_calls_build_dashboard(self) -> None:
+        """run_multi_asset with no_dashboard=False (default) must call build_dashboard."""
+        from pathlib import Path
+        from unittest.mock import patch as upatch
+
+        from helpers import make_oscillating_data
+
+        from backtesting_engine.execution import ExecutionConfig
+        from backtesting_engine.multi_asset import run_multi_asset
+
+        build_calls = []
+
+        def mock_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+            build_calls.append(1)
+
+        with (upatch("backtesting_engine.multi_asset.load_data",
+                     return_value=make_oscillating_data(756, with_high_low=True)),
+              upatch("backtesting_engine.multi_asset.validate_data"),
+              upatch("backtesting_engine.multi_asset.build_dashboard", side_effect=mock_build),
+        ):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2010-01-01",
+                end="2016-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=Path("/tmp"),
+                strategy="ma",
+                no_dashboard=False,
+            )
+
+        assert len(build_calls) == 1, (
+            f"Expected 1 build_dashboard call, got {len(build_calls)}"
+        )

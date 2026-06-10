@@ -1,5 +1,6 @@
 """
-Tests for trade-level diagnostic metrics added in the fix pass.
+Tests for trade-level diagnostic metrics: exposure fraction, win rate,
+avg win/loss ratio, and avg holding period.
 
 These cover: exposure fraction, win rate, avg win/loss ratio, avg holding period.
 Each test uses synthetic data where the expected value can be derived by hand,

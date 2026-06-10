@@ -28,6 +28,7 @@ defined in conftest.py and auto-injected by pytest - no import required.
 """
 
 import math
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -389,3 +390,79 @@ class TestWalkForwardInputValidation:
                          testing_window_years=1, execution=_ZERO_FRICTION)
         except ValueError as e:
             pytest.fail(f"Valid years raised ValueError: {e}")
+
+
+# ---------------------------------------------------------------------------
+
+# WindowResult deprecation, _extract_active_params removal
+
+
+# ---------------------------------------------------------------------------
+
+class TestWindowResultDeprecationWarning:
+    """WindowResult.skipped=True must fire a DeprecationWarning."""
+
+    def _make_window_result(self, skipped: bool) -> object:
+        from backtesting_engine.models import MetricsResult, SimulationResult, WindowResult
+        sim = SimulationResult(trades=[])
+        m = MetricsResult(
+            sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown=0.0,
+            calmar_ratio=0.0, omega_ratio=0.0, p_value=0.0,
+        )
+        return WindowResult(
+            train_start=pd.Timestamp("2020-01-01"),
+            train_end=pd.Timestamp("2020-12-31"),
+            test_start=pd.Timestamp("2021-01-01"),
+            test_end=pd.Timestamp("2021-12-31"),
+            simulation_result=sim,
+            metrics_result=m,
+            skipped=skipped,
+        )
+
+    def test_skipped_false_no_warning(self) -> None:
+        """Normal construction (skipped=False) must not emit any warning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self._make_window_result(skipped=False)
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) == 0
+
+    def test_skipped_true_fires_deprecation_warning(self) -> None:
+        """Explicit skipped=True must emit exactly one DeprecationWarning."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self._make_window_result(skipped=True)
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) == 1
+
+    def test_skipped_true_warning_mentions_flat_cash(self) -> None:
+        """Warning message should explain the replacement concept (flat-cash)."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self._make_window_result(skipped=True)
+        msg = str(w[0].message)
+        assert "flat-cash" in msg.lower() or "flat cash" in msg.lower()
+
+    def test_skipped_true_warning_is_deprecation_not_runtime(self) -> None:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            self._make_window_result(skipped=True)
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert not issubclass(w[0].category, RuntimeWarning)
+
+class TestExtractActiveParamsRemoved:
+    """_extract_active_params was a dead one-liner wrapper that has been removed.
+
+    Verifies it is gone and the orchestrator calls strategy.active_params() directly.
+    Prevents it from being accidentally re-added.
+    """
+
+    def test_extract_active_params_not_in_walk_forward_module(self) -> None:
+        import inspect
+
+        import backtesting_engine.walk_forward as wf
+        members = [name for name, _ in inspect.getmembers(wf)]
+        assert "_extract_active_params" not in members, (
+            "_extract_active_params was a dead one-liner wrapper that should not exist. "
+            "The orchestrator calls strategy.active_params() directly."
+        )

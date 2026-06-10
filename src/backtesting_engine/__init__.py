@@ -21,6 +21,7 @@ Run all three strategies with one call:
         execution=ExecutionConfig(transaction_cost_rate=0.0001, slippage_factor=0.01),
     )
 
+    from pathlib import Path
     build_dashboard(result, output_path=Path("dashboard.html"))
 
 Zero-friction (strategy logic verification, no execution model):
@@ -69,6 +70,7 @@ from backtesting_engine.strategy.base import BaseStrategy, returns_from_signals
 from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
 from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.summary import write_summary_csv, write_summary_json
 from backtesting_engine.walk_forward import walk_forward
 
 __all__ = [
@@ -102,6 +104,9 @@ __all__ = [
     # Statistical testing
     "white_reality_check",
     "build_candidate_return_matrix",
+    # Summary output
+    "write_summary_json",
+    "write_summary_csv",
     # Cross-asset validation
     "run_multi_asset",
 ]

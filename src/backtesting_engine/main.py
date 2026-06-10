@@ -22,6 +22,14 @@ Output files:
   dashboard_kalman.html   Kalman filter walk-forward dashboard
   dashboard_momentum.html Momentum walk-forward dashboard
   cost_sensitivity.html   Cost sensitivity heatmap
+
+Optional summary outputs (written only when the corresponding flag is passed):
+  --summary-json PATH     JSON file with all MetricsResult + BenchmarkResult fields
+  --summary-csv PATH      CSV version, one row per strategy, same fields
+
+Performance flags:
+  --no-dashboard          Skip all HTML dashboard generation (stdout results still shown)
+  --workers N             Parallel workers for cost sensitivity sweep (default: 1)
 """
 
 import argparse
@@ -52,6 +60,7 @@ from backtesting_engine.models import BacktestResult
 from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
 from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.summary import write_summary_csv, write_summary_json
 from backtesting_engine.walk_forward import walk_forward
 
 
@@ -162,6 +171,47 @@ Examples:
         metavar="DIR",
         help="Directory for output dashboards (default: current directory)",
     )
+    parser.add_argument(
+        "--summary-json",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write a JSON summary of all strategy results to PATH. "
+            "Contains ticker, date range, ExecutionConfig, MetricsResult, "
+            "and BenchmarkResult fields for every strategy that was run."
+        ),
+    )
+    parser.add_argument(
+        "--summary-csv",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write a CSV summary of all strategy results to PATH. "
+            "Same data as --summary-json, flattened to one row per strategy."
+        ),
+    )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip all dashboard generation. Useful for CI, fast metric-only runs, "
+            "and the --summary-json workflow where the HTML files are not needed. "
+            "Results are still printed to stdout."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of parallel workers for the cost sensitivity sweep "
+            "(default: 1). Use -1 for all available cores. "
+            "On Windows, values > 1 use multiprocessing via spawn; "
+            "the CLI entry point handles this automatically."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -204,6 +254,9 @@ def main() -> None:
     ma_result       = None
     kalman_result   = None
     momentum_result = None
+    ma_benchmark       = None
+    kalman_benchmark   = None
+    momentum_benchmark = None
 
     if run_ma:
         _section("Strategy 1: Moving Average Crossover  (grid-search calibrated)")
@@ -215,14 +268,15 @@ def main() -> None:
         _print_results(ma_result)
         ma_benchmark = compute_benchmark(ma_result, data, execution=execution)
         _print_benchmark(ma_benchmark)
-        ma_dash = build_dashboard(
-            ma_result,
-            output_dir / "dashboard_ma.html",
-            strategy_name_override="Moving Average Crossover",
-            benchmark=ma_benchmark,
-            price_data=data["close"],
-        )
-        print(f"\n  Dashboard → {ma_dash}\n")
+        if not args.no_dashboard:
+            ma_dash = build_dashboard(
+                ma_result,
+                output_dir / "dashboard_ma.html",
+                strategy_name_override="Moving Average Crossover",
+                benchmark=ma_benchmark,
+                price_data=data["close"],
+            )
+            print(f"\n  Dashboard → {ma_dash}\n")
 
     if run_kalman:
         _section("Strategy 2: Kalman Filter Trend Following  (MLE calibrated)")
@@ -234,14 +288,15 @@ def main() -> None:
         _print_results(kalman_result)
         kalman_benchmark = compute_benchmark(kalman_result, data, execution=execution)
         _print_benchmark(kalman_benchmark)
-        kalman_dash = build_dashboard(
-            kalman_result,
-            output_dir / "dashboard_kalman.html",
-            strategy_name_override="Kalman Filter Trend Following",
-            benchmark=kalman_benchmark,
-            price_data=data["close"],
-        )
-        print(f"\n  Dashboard → {kalman_dash}\n")
+        if not args.no_dashboard:
+            kalman_dash = build_dashboard(
+                kalman_result,
+                output_dir / "dashboard_kalman.html",
+                strategy_name_override="Kalman Filter Trend Following",
+                benchmark=kalman_benchmark,
+                price_data=data["close"],
+            )
+            print(f"\n  Dashboard → {kalman_dash}\n")
 
     if run_momentum:
         _section("Strategy 3: Time-Series Momentum  (lookback grid-search calibrated)")
@@ -253,19 +308,36 @@ def main() -> None:
         _print_results(momentum_result)
         momentum_benchmark = compute_benchmark(momentum_result, data, execution=execution)
         _print_benchmark(momentum_benchmark)
-        momentum_dash = build_dashboard(
-            momentum_result,
-            output_dir / "dashboard_momentum.html",
-            strategy_name_override="Time-Series Momentum",
-            benchmark=momentum_benchmark,
-            price_data=data["close"],
-        )
-        print(f"\n  Dashboard → {momentum_dash}\n")
+        if not args.no_dashboard:
+            momentum_dash = build_dashboard(
+                momentum_result,
+                output_dir / "dashboard_momentum.html",
+                strategy_name_override="Time-Series Momentum",
+                benchmark=momentum_benchmark,
+                price_data=data["close"],
+            )
+            print(f"\n  Dashboard → {momentum_dash}\n")
 
     ready = [r for r in [ma_result, kalman_result, momentum_result] if r is not None]
     if len(ready) >= 2 and ma_result is not None and kalman_result is not None and momentum_result is not None:
         _section("Comparative Summary")
         _print_comparison(ma_result, kalman_result, momentum_result)
+
+    # Write summary outputs before cost sensitivity so they're available even
+    # if the sweep is slow or the user interrupts after strategy runs complete.
+    _write_summaries(
+        args,
+        execution=execution,
+        ticker=args.ticker,
+        start=args.start,
+        end=args.end,
+        ma_result=ma_result,
+        kalman_result=kalman_result,
+        momentum_result=momentum_result,
+        ma_benchmark=ma_benchmark if run_ma else None,
+        kalman_benchmark=kalman_benchmark if run_kalman else None,
+        momentum_benchmark=momentum_benchmark if run_momentum else None,
+    )
 
     if args.costs_only or args.strategy == "all":
         _section("Cost Sensitivity Analysis  (how significance degrades with execution cost)")
@@ -273,6 +345,9 @@ def main() -> None:
             data, ma_result, kalman_result, momentum_result,
             output_dir=output_dir,
             train_yrs=train_yrs, test_yrs=test_yrs,
+            n_workers=args.workers,
+            no_dashboard=args.no_dashboard,
+            signal_delay=args.delay,
             bootstrap_seed=bootstrap_seed,
         )
 
@@ -373,9 +448,12 @@ def _print_summary(result: BacktestResult) -> None:
     print(f"  {'Fisher combined p':<30} {m.combined_p_value:.6f}  (approx: windows not fully independent)")
 
     if not math.isnan(m.reality_check_p_value):
-        print(f"  {'White Reality Check p':<30} {m.reality_check_p_value:.6f}  ← data-snooping corrected")
+        print(f"  {'White RC p (vs cash)':<30} {m.reality_check_p_value:.6f}  ← data-snooping corrected")
     else:
-        print(f"  {'White Reality Check p':<30} N/A (no parameter grid)")
+        print(f"  {'White RC p (vs cash)':<30} N/A (no parameter grid)")
+
+    if not math.isnan(m.reality_check_bh_p_value):
+        print(f"  {'White RC p (vs B&H)':<30} {m.reality_check_bh_p_value:.6f}  ← benchmark-relative")
 
     # Trade diagnostics
     print()
@@ -393,23 +471,27 @@ def _print_summary(result: BacktestResult) -> None:
         print(f"  {'Avg holding period':<30} {m.avg_holding_days:.1f} days")
 
     print()
-    _verdict(m.combined_p_value, m.reality_check_p_value)
+    _verdict(m.combined_p_value, m.reality_check_p_value, m.reality_check_bh_p_value)
 
 
-def _verdict(fisher_p: float, rc_p: float) -> None:
+def _verdict(fisher_p: float, rc_p: float, rc_bh_p: float = float("nan")) -> None:
     if fisher_p < SIGNIFICANCE_THRESHOLD:
         if not math.isnan(rc_p) and rc_p >= SIGNIFICANCE_THRESHOLD:
             print(
                 f"  ⚠  MARGINAL: Fisher p={fisher_p:.4f} significant, but "
-                f"White's Reality Check p={rc_p:.4f} is not.\n"
+                f"White's RC (cash) p={rc_p:.4f} is not.\n"
                 f"     Significance likely reflects parameter search, not genuine edge.\n"
                 f"     Reality Check benchmark: zero return (cash), not buy-and-hold."
             )
         else:
+            bh_note = (
+                f"\n     RC vs B&H p={rc_bh_p:.4f} - benchmark-relative significance."
+                if not math.isnan(rc_bh_p) else ""
+            )
             print(
                 f"  ✓  SIGNIFICANT: Fisher p={fisher_p:.4f} < {SIGNIFICANCE_THRESHOLD}.\n"
-                f"     Note: Fisher assumes window independence (approximate).\n"
-                f"     Check information ratio - significance vs cash ≠ significance vs BH."
+                f"     Note: Fisher assumes window independence (approximate)."
+                f"{bh_note}"
             )
     else:
         print(
@@ -495,7 +577,10 @@ def _print_comparison(
 
     rc_ma = f"{ma_m.reality_check_p_value:.4f}" if not math.isnan(ma_m.reality_check_p_value) else "N/A"
     rc_mo = f"{mo_m.reality_check_p_value:.4f}" if not math.isnan(mo_m.reality_check_p_value) else "N/A"
-    row("Reality Check p", rc_ma, "N/A", rc_mo)
+    row("RC p (vs cash)", rc_ma, "N/A", rc_mo)
+    rc_bh_ma = f"{ma_m.reality_check_bh_p_value:.4f}" if not math.isnan(ma_m.reality_check_bh_p_value) else "N/A"
+    rc_bh_mo = f"{mo_m.reality_check_bh_p_value:.4f}" if not math.isnan(mo_m.reality_check_bh_p_value) else "N/A"
+    row("RC p (vs B&H)", rc_bh_ma, "N/A", rc_bh_mo)
     print()
 
 
@@ -512,6 +597,9 @@ def _run_cost_sensitivity(
     train_yrs: int = TRAINING_WINDOW_YEARS,
     test_yrs: int = TESTING_WINDOW_YEARS,
     bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
+    n_workers: int = 1,
+    no_dashboard: bool = False,
+    signal_delay: int = 1,
 ) -> None:
     """
     Sweep over (transaction_cost_rate, slippage_factor) grids and show how
@@ -522,6 +610,13 @@ def _run_cost_sensitivity(
 
     bootstrap_seed is forwarded to every walk_forward call in the sweep so that
     results are reproducible when --seed is passed on the CLI.
+
+    n_workers controls multiprocessing in cost_sensitivity_sweep. Defaults to 1
+    (sequential) for safety on all platforms. Increase on Linux/macOS for faster
+    sweeps: each (cost_rate, slippage_factor) cell is one independent walk_forward.
+
+    When no_dashboard is True, the cost sensitivity heatmap HTML file is skipped.
+    Results are still printed to stdout.
     """
     cost_rates   = [0.0001, 0.0005, 0.001, 0.002, 0.005]
     slip_factors = [0.0, 0.025, 0.05, 0.10, 0.20]
@@ -536,6 +631,8 @@ def _run_cost_sensitivity(
         training_window_years=train_yrs,
         testing_window_years=test_yrs,
         bootstrap_seed=bootstrap_seed,
+        n_workers=n_workers,
+        signal_delay=signal_delay,
     )
 
     print("  Running Kalman cost sensitivity sweep...")
@@ -546,6 +643,8 @@ def _run_cost_sensitivity(
         training_window_years=train_yrs,
         testing_window_years=test_yrs,
         bootstrap_seed=bootstrap_seed,
+        n_workers=n_workers,
+        signal_delay=signal_delay,
     )
 
     print("  Running Momentum cost sensitivity sweep...\n")
@@ -556,12 +655,15 @@ def _run_cost_sensitivity(
         training_window_years=train_yrs,
         testing_window_years=test_yrs,
         bootstrap_seed=bootstrap_seed,
+        n_workers=n_workers,
+        signal_delay=signal_delay,
     )
 
     for name, sweep in sweeps.items():
         _print_cost_table(name, sweep, cost_rates, slip_factors)
 
-    _save_cost_heatmap(sweeps, cost_rates, slip_factors, output_dir=output_dir)
+    if not no_dashboard:
+        _save_cost_heatmap(sweeps, cost_rates, slip_factors, output_dir=output_dir)
 
 
 def _print_cost_table(
@@ -658,6 +760,84 @@ def _save_cost_heatmap(
     except Exception as e:
         # Unexpected plotly rendering error - surface it rather than swallowing.
         print(f"  (Cost heatmap failed unexpectedly: {type(e).__name__}: {e})")
+
+
+def _write_summaries(
+    args: argparse.Namespace,
+    execution: ExecutionConfig,
+    ticker: str,
+    start: str,
+    end: str | None,
+    ma_result: BacktestResult | None,
+    kalman_result: BacktestResult | None,
+    momentum_result: BacktestResult | None,
+    ma_benchmark: BenchmarkResult | None,
+    kalman_benchmark: BenchmarkResult | None,
+    momentum_benchmark: BenchmarkResult | None,
+) -> None:
+    """
+    Write --summary-json and/or --summary-csv if the user requested them.
+
+    Only strategies that were actually run appear in the output. Strategies
+    skipped via --strategy or --costs-only are omitted rather than written
+    with empty values, so partial runs produce honest summaries.
+    """
+    if args.summary_json is None and args.summary_csv is None:
+        return
+
+    strategy_labels = {
+        "MovingAverageStrategy":  "Moving Average Crossover",
+        "KalmanFilterStrategy":   "Kalman Filter Trend Following",
+        "MomentumStrategy":       "Time-Series Momentum",
+    }
+
+    runs = []
+    for result, benchmark in [
+        (ma_result, ma_benchmark),
+        (kalman_result, kalman_benchmark),
+        (momentum_result, momentum_benchmark),
+    ]:
+        if result is None:
+            continue
+        label = strategy_labels.get(result.strategy_name, result.strategy_name)
+        runs.append((label, result, benchmark))
+
+    if not runs:
+        return
+
+    # Derive the actual date range from the data windows rather than the CLI
+    # start argument - the CLI start is the data download start, but the first
+    # walk-forward window's train_start may be later.
+    date_range = None
+    first_result = runs[0][1]
+    windows = first_result.valid_windows
+    if windows:
+        data_end = args.end or str(windows[-1].test_end.date())
+        date_range = (str(windows[0].train_start.date()), data_end)
+
+    if args.summary_json is not None:
+        json_path = Path(args.summary_json)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        write_summary_json(
+            runs,
+            json_path,
+            ticker=ticker,
+            date_range=date_range,
+            execution=execution,
+        )
+        print(f"  Summary JSON → {json_path.resolve()}")
+
+    if args.summary_csv is not None:
+        csv_path = Path(args.summary_csv)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        write_summary_csv(
+            runs,
+            csv_path,
+            ticker=ticker,
+            date_range=date_range,
+            execution=execution,
+        )
+        print(f"  Summary CSV  → {csv_path.resolve()}")
 
 
 if __name__ == "__main__":

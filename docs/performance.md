@@ -13,8 +13,8 @@ Windows (vs `fork` on Linux/Mac). Each parallel worker reimports the full
 module before executing, adding ~3–8 seconds of overhead per worker. On
 Windows, `make run` takes ~30–40 min and `make run-costs` can take 2–3 hours.
 The `n_workers` parameter on `cost_sensitivity_sweep()` controls parallelism
-in the Python API but is not exposed as a CLI flag in v0.8.0. On Windows,
-sequential execution is the most reliable path.
+in the Python API. On Windows, sequential execution (`n_workers=1`) is the most
+reliable path.
 
 | Command | First run (download) | Subsequent runs (cached) |
 |---|---|---|
@@ -96,7 +96,7 @@ results = cost_sensitivity_sweep(
 On an 8-core Mac/Linux machine, a 5×5 sweep that takes 20 minutes serially
 completes in ~3 minutes. On Windows, spawn overhead dominates and parallelism
 provides little benefit. The `n_workers` parameter is available via the Python
-API (`cost_sensitivity_sweep(n_workers=-1)`) but not as a CLI flag in v0.8.0.
+API (`cost_sensitivity_sweep(n_workers=N)`) and as `--workers N` on the CLI.
 Note: parallelism uses `ProcessPoolExecutor` (spawns Python subprocesses),
 so startup overhead is ~2–3 seconds per worker on Mac/Linux and ~3–8 seconds
 per worker on Windows.
@@ -144,7 +144,7 @@ well within typical RAM limits.
 
 ## CI runtime
 
-`make test` runs 413 tests in a few minutes on a modern machine. On this Windows
+`make test` runs 468 tests in a few minutes on a modern machine. On this Windows
 development machine, `poetry run pytest -q` completed in 2:14.
 
 `N_PERMUTATIONS=10_000` in `config.py` is the production value used by `make run`.

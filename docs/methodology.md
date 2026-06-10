@@ -45,7 +45,11 @@ Fisher assumes independence. Walk-forward windows share regime exposure, so this
 
 When you grid-search parameters and report the best Sharpe, the naive p-value is misleading - you've effectively run many tests and reported the best one. RC corrects for this by building a null distribution from the full candidate matrix simultaneously, preserving cross-candidate correlation.
 
-The null is cash (zero return), not buy-and-hold. A strategy can have a low RC p-value and still underperform buy-and-hold. Both are reported. RC tests whether any candidate beats cash after data-snooping correction; the IR tests whether the strategy beats buy-and-hold.
+Two nulls are reported:
+
+**Cash null (RC p vs cash):** The original White (2000) formulation. Tests whether the best candidate beats zero return after data-snooping correction. A strategy can have a low RC p vs cash and still underperform buy-and-hold.
+
+**Buy-and-hold null (RC p vs B&H):** Resamples active returns (candidate returns minus buy-and-hold returns) rather than raw returns. Tests whether the best candidate beats a passive investor after data-snooping correction. This is the more relevant test for an active equity strategy. A strategy that has low RC p vs cash but high RC p vs B&H is capturing beta rather than generating alpha.
 
 RC p-values depend on the candidate grid. A narrower grid inflates the RC p-value; a wider grid deflates it. The grids are fixed in the strategy classes and documented there.
 
@@ -87,9 +91,9 @@ variance but won't turn a marginal result into a significant one.
 
 ## Cross-asset validation
 
-`make run-multi` runs MA crossover on SPY, QQQ, TLT, and GLD independently with the same parameters. A null result on three or four assets is a stronger finding than the single-SPY result.
+`make run-multi` runs MA crossover on SPY, QQQ, TLT, and GLD independently with the same parameters. `make run-multi-all` runs all three strategies across the same tickers. A null result across all three strategies and all four asset classes is a materially stronger finding than the single-SPY result.
 
-Current scope is MA crossover only - Kalman and momentum cross-asset aren't implemented. The comparison table doesn't apply a multiple-testing correction across tickers; a single ticker appearing significant while three are null shouldn't be treated as a significant result.
+The comparison table doesn't apply a multiple-testing correction across tickers; a single ticker appearing significant while three are null shouldn't be treated as a significant result.
 
 ---
 
@@ -112,5 +116,3 @@ Current scope is MA crossover only - Kalman and momentum cross-asset aren't impl
 **Close-of-day fills.** All fills at adjusted close ± slippage. Real execution on opening auctions differs.
 
 **yfinance data quality.** Split and dividend adjustments can have errors. The validator catches obvious ones but not all.
-
-**RC null is cash, not buy-and-hold.** A strategy that beats cash but underperforms B&H still gets a low RC p-value.

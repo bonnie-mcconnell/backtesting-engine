@@ -17,11 +17,13 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from backtesting_engine.benchmark import _buy_and_hold_returns
 from backtesting_engine.config import (
     ANNUALISATION_FACTOR,
     BLOCK_BOOTSTRAP_SEED,
     TESTING_WINDOW_YEARS,
     TRAINING_WINDOW_YEARS,
+    TRANSACTION_COST_RATE,
 )
 from backtesting_engine.execution import ExecutionConfig, run_simulation_with_execution
 from backtesting_engine.metrics import _calmar, calculate_metrics
@@ -56,7 +58,8 @@ def walk_forward(
 
     Returns:
         BacktestResult with per-window results, Fisher combined p-value,
-        White's Reality Check p-value, parameter evolution, and flat-cash count.
+        White's Reality Check p-values (cash null and buy-and-hold null),
+        parameter evolution, and flat-cash count.
 
     Raises:
         ValueError: If no valid windows could be evaluated, or if window
@@ -161,17 +164,21 @@ def walk_forward(
             "years of data."
         )
 
-    all_windows = window_results
-
-    total_trades = sum(len(w.simulation_result.trades) for w in all_windows)
+    total_trades = sum(len(w.simulation_result.trades) for w in window_results)
     if total_trades == 0:
         raise ValueError(
             f"Strategy '{strategy.__class__.__name__}' generated zero trades across "
-            f"all {len(all_windows)} walk-forward windows. "
+            f"all {len(window_results)} walk-forward windows. "
             "Check that strategy parameters produce signals on this data range."
         )
 
-    summary = _build_summary_metrics(all_windows, window_candidate_returns, bootstrap_seed=bootstrap_seed)
+    summary = _build_summary_metrics(
+        window_results,
+        window_candidate_returns,
+        bootstrap_seed=bootstrap_seed,
+        data=data,
+        execution=execution,
+    )
 
     return BacktestResult(
         strategy_name=strategy.__class__.__name__,
@@ -201,9 +208,17 @@ def _build_summary_metrics(
     valid_windows: list[WindowResult],
     window_candidate_returns: list[dict[Any, pd.Series]],
     bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
+    data: pd.DataFrame | None = None,
+    execution: ExecutionConfig | None = None,
 ) -> MetricsResult:
     """
     Aggregate per-window metrics with Fisher combined p and Reality Check p.
+
+    When data and execution are provided, also computes a second RC p-value
+    under the buy-and-hold null (resampling active returns). The two p-values
+    answer different questions:
+    - reality_check_p_value: does the best strategy beat cash?
+    - reality_check_bh_p_value: does the best strategy beat buy-and-hold?
 
     A few aggregation choices worth noting:
     - max_drawdown: worst (minimum) across windows, not mean. The worst-case
@@ -230,6 +245,7 @@ def _build_summary_metrics(
     fisher_p = _fisher_combined_p([w.metrics_result.p_value for w in valid_windows])
 
     rc_p = float("nan")
+    rc_bh_p = float("nan")
     if window_candidate_returns:
         try:
             arr_dicts: list[dict[Any, np.ndarray]] = [
@@ -238,9 +254,25 @@ def _build_summary_metrics(
             ]
             candidate_matrix = build_candidate_return_matrix(arr_dicts)
             rc_p = white_reality_check(candidate_matrix, seed=bootstrap_seed)
+
+            # BH-null RC: stitch buy-and-hold returns across the same windows
+            # that contributed to the candidate matrix, then subtract from each
+            # candidate column. Windows that produced no candidates (flat-cash
+            # windows that were zeroed out) contribute zero benchmark returns
+            # - this is correct since those windows also contributed zero candidate
+            # returns, so active return is zero minus zero = zero regardless.
+            if data is not None:
+                bh_returns = _stitch_benchmark_returns(valid_windows, data, execution)
+                if len(bh_returns) == candidate_matrix.shape[0]:
+                    rc_bh_p = white_reality_check(
+                        candidate_matrix,
+                        seed=bootstrap_seed,
+                        benchmark_returns=bh_returns,
+                    )
         except ValueError:
             # no candidate pair was evaluated in every window - RC not computable
             rc_p = float("nan")
+            rc_bh_p = float("nan")
 
     return MetricsResult(
         sharpe_ratio=mean_metric("sharpe_ratio"),
@@ -251,12 +283,44 @@ def _build_summary_metrics(
         p_value=mean_metric("p_value"),
         combined_p_value=fisher_p,
         reality_check_p_value=rc_p,
+        reality_check_bh_p_value=rc_bh_p,
         exposure_fraction=mean_metric("exposure_fraction"),
         trade_count=sum(w.metrics_result.trade_count for w in valid_windows),
         win_rate=mean_metric("win_rate"),
         avg_win_loss_ratio=mean_metric("avg_win_loss_ratio"),
         avg_holding_days=mean_metric("avg_holding_days"),
     )
+
+
+def _stitch_benchmark_returns(
+    valid_windows: list[WindowResult],
+    data: pd.DataFrame,
+    execution: ExecutionConfig | None = None,
+) -> np.ndarray:
+    """
+    Stitch buy-and-hold daily returns across all walk-forward windows.
+
+    Used to compute active returns for the BH-null Reality Check. The
+    resulting array has the same length as the candidate return matrix
+    produced by build_candidate_return_matrix(), so they can be subtracted
+    column-wise directly.
+
+    Flat-cash windows contribute zero benchmark returns here, matching the
+    zero candidate returns that walk_forward() inserts for those windows.
+    """
+    cost_rate = execution.transaction_cost_rate if execution is not None else TRANSACTION_COST_RATE
+    slippage = execution.slippage_factor if execution is not None else 0.0
+
+    segments: list[np.ndarray] = []
+    for window in valid_windows:
+        window_data = data.loc[window.test_start:window.test_end]
+        bh = _buy_and_hold_returns(window_data, cost_rate=cost_rate, slippage_factor=slippage)
+        segments.append(bh)
+
+    if not segments:
+        return np.array([], dtype=float)
+
+    return np.concatenate(segments)
 
 
 def _calmar_from_stitched(valid_windows: list[WindowResult]) -> float:
@@ -310,6 +374,7 @@ def _flat_cash_metrics() -> MetricsResult:
         p_value=1.0,
         combined_p_value=float("nan"),
         reality_check_p_value=float("nan"),
+        reality_check_bh_p_value=float("nan"),
         exposure_fraction=0.0,
         trade_count=0,
         win_rate=float("nan"),

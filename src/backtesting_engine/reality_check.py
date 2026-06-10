@@ -34,9 +34,15 @@ def white_reality_check(
     candidate_returns: np.ndarray,
     n_bootstrap: int | None = None,
     seed: int = BLOCK_BOOTSTRAP_SEED,
+    benchmark_returns: np.ndarray | None = None,
 ) -> float:
     """
     White's Reality Check p-value for a universe of candidate strategies.
+
+    When benchmark_returns is provided, the test is run on active returns
+    (candidate minus benchmark) rather than raw returns. This shifts the null
+    from "no strategy beats cash" to "no strategy beats the benchmark", which
+    is the correct question for an active equity strategy.
 
     Args:
         candidate_returns: Array of shape (T, k) where T is the number of
@@ -49,6 +55,10 @@ def white_reality_check(
             N_PERMUTATIONS to 200 via conftest.py; using None as the default
             ensures that patch takes effect.
         seed: Random seed for reproducibility.
+        benchmark_returns: Optional array of shape (T,) or (T, 1) containing
+            benchmark (e.g. buy-and-hold) daily returns. When provided, the RC
+            is computed on active returns (candidate_returns - benchmark_returns)
+            column-wise. Must have the same length T as candidate_returns.
 
     Returns:
         Reality Check p-value in [0, 1]. Small values indicate the best
@@ -56,7 +66,8 @@ def white_reality_check(
 
     Raises:
         ValueError: If candidate_returns has fewer than 2 dimensions or
-                    fewer than 1 strategy.
+                    fewer than 1 strategy. If benchmark_returns is provided
+                    but has a different length than candidate_returns.
     """
     # Read N_PERMUTATIONS at call time so the test suite can patch it via
     # conftest.py. If n_bootstrap=N_PERMUTATIONS were a default argument,
@@ -73,9 +84,27 @@ def white_reality_check(
     if n_periods < 2:
         raise ValueError("Need at least 2 time periods to bootstrap.")
 
+    # When a benchmark is provided, test on active returns (strategy minus benchmark).
+    # The null shifts from "no strategy beats cash" to "no strategy beats the benchmark".
+    # All subsequent bootstrap operations work on test_returns identically - the
+    # benchmark subtraction is just a change of basis for the return matrix.
+    if benchmark_returns is not None:
+        bm = np.asarray(benchmark_returns, dtype=float).ravel()
+        if len(bm) != n_periods:
+            raise ValueError(
+                f"benchmark_returns length {len(bm)} must match candidate_returns "
+                f"length {n_periods}."
+            )
+        # Broadcast subtract: each candidate column minus the benchmark series.
+        test_returns = candidate_returns - bm[:, np.newaxis]
+    else:
+        test_returns = candidate_returns
+
     # Mean excess returns for each candidate over the observed period.
-    # Benchmark = cash (zero return), so excess return is just the raw return.
-    mean_returns = candidate_returns.mean(axis=0)   # shape (k,)
+    # Benchmark = cash (zero return) or user-supplied benchmark, already
+    # subtracted above. Excess return is thus raw return when no benchmark
+    # is given, or active return when one is.
+    mean_returns = test_returns.mean(axis=0)   # shape (k,)
 
     # Observed test statistic: maximum mean return across all candidates.
     # This is what White (2000) calls V̄_k (equation 3.2).
@@ -89,7 +118,7 @@ def white_reality_check(
     count_exceeds = 0
     for _ in range(n_iters):
         # Draw one stationary bootstrap resample of the return matrix.
-        resampled = _stationary_bootstrap_resample(candidate_returns, p, n_periods, rng)
+        resampled = _stationary_bootstrap_resample(test_returns, p, n_periods, rng)
 
         # Centred bootstrap statistic (White eq. 3.3): subtract each column's
         # observed mean so the null distribution is anchored at zero.

@@ -235,6 +235,7 @@ def _sweep_worker(
         int,
         int,
         int,
+        int,
     ],
 ) -> tuple[tuple[float, float], float]:
     """
@@ -249,7 +250,7 @@ def _sweep_worker(
     from backtesting_engine.strategy.moving_average import MovingAverageStrategy
     from backtesting_engine.walk_forward import walk_forward
 
-    (cost, slip), data, strategy_name, train_yrs, test_yrs, seed = args
+    (cost, slip), data, strategy_name, train_yrs, test_yrs, seed, signal_delay = args
 
     _strategy_map = {
         "MovingAverageStrategy": MovingAverageStrategy,
@@ -263,7 +264,7 @@ def _sweep_worker(
     exec_config = ExecutionConfig(
         transaction_cost_rate=cost,
         slippage_factor=slip,
-        signal_delay=1,
+        signal_delay=signal_delay,
     )
     try:
         result = walk_forward(
@@ -288,6 +289,7 @@ def cost_sensitivity_sweep(
     testing_window_years: int = 1,
     n_workers: int = 1,
     bootstrap_seed: int = BLOCK_BOOTSTRAP_SEED,
+    signal_delay: int = 1,
 ) -> dict[tuple[float, float], float]:
     """
     Sweep over (cost_rate, slippage_factor) pairs and return Fisher p-values.
@@ -310,9 +312,11 @@ def cost_sensitivity_sweep(
         n_workers = os.cpu_count() or 1
 
     strategy_name = strategy.__class__.__name__
+    execution_signal_delay = signal_delay
     pairs = [(c, s) for c in cost_rates for s in slippage_factors]
     worker_args = [
-        ((c, s), data, strategy_name, training_window_years, testing_window_years, bootstrap_seed)
+        ((c, s), data, strategy_name, training_window_years, testing_window_years,
+         bootstrap_seed, execution_signal_delay)
         for c, s in pairs
     ]
 

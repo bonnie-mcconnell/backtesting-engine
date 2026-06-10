@@ -38,9 +38,10 @@ class MetricsResult:
     Performance metrics computed from a portfolio value series.
 
     All ratio metrics are annualised (252 trading days). p_value is the
-    per-window block-bootstrap Sharpe p-value. combined_p_value and
-    reality_check_p_value are populated on BacktestResult.summary_metrics
-    after the full walk-forward completes; they're NaN on individual windows.
+    per-window block-bootstrap Sharpe p-value. combined_p_value,
+    reality_check_p_value, and reality_check_bh_p_value are populated on
+    BacktestResult.summary_metrics after the full walk-forward completes;
+    they're NaN on individual windows.
 
     Trade diagnostics (exposure_fraction through avg_holding_days) are NaN
     when trades were not provided to calculate_metrics().
@@ -53,7 +54,13 @@ class MetricsResult:
     p_value: float
     combined_p_value: float = float("nan")
     reality_check_p_value: float = float("nan")
-    # trade diagnostics - only populated when trades are passed to calculate_metrics()
+    # RC p-value under the buy-and-hold null. Resamples active returns
+    # (strategy minus B&H) rather than raw returns. A small value means the
+    # best candidate beats B&H after multiple-comparison correction. A large
+    # value means it doesn't - the strategy is capturing beta, not generating alpha.
+    reality_check_bh_p_value: float = float("nan")
+
+    # Trade diagnostics - only populated when trades are passed to calculate_metrics().
     exposure_fraction: float = float("nan")
     trade_count: int = 0
     win_rate: float = float("nan")

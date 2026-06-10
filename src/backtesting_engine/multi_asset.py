@@ -1,11 +1,15 @@
 """
 Cross-asset walk-forward validation.
 
-Runs the same strategy independently on multiple tickers and produces a
-comparison table showing whether the null result on SPY holds across asset
-classes. A strategy that works on SPY but not on QQQ, TLT, or GLD is
-probably fitting to a US equity bull-market regime. Consistently large
-p-values across all four assets is a stronger null result.
+Runs a strategy independently on multiple tickers and produces a comparison
+table showing whether the null result on SPY holds across asset classes.
+A strategy that works on SPY but not on QQQ, TLT, or GLD is probably fitting
+to a US equity bull-market regime. Consistently large p-values across all four
+assets and all three strategies is a materially stronger null result.
+
+Three strategies are supported: MA crossover (--strategy ma), Kalman filter
+trend-following (--strategy kalman), and time-series momentum
+(--strategy momentum). --strategy all runs all three in sequence.
 
 Tickers: SPY (US large-cap equity), QQQ (US tech equity), TLT (long-duration
 treasuries), GLD (gold). Start date 2005-01-01 is the earliest date where all
@@ -34,6 +38,9 @@ from backtesting_engine.data.ingestion import load_data
 from backtesting_engine.data.validator import validate_data
 from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult, MetricsResult
+from backtesting_engine.strategy.base import BaseStrategy
+from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
+from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
@@ -42,6 +49,15 @@ from backtesting_engine.walk_forward import walk_forward
 _MIN_ROWS = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * 252 + 200
 
 _DEFAULT_TICKERS = ["SPY", "QQQ", "TLT", "GLD"]
+
+# Maps CLI strategy name → (factory, short label for filenames and table headers).
+# Factory is a zero-argument callable so each ticker gets a fresh strategy instance.
+_STRATEGY_MAP: dict[str, tuple[type[BaseStrategy], str]] = {
+    "ma":       (MovingAverageStrategy,  "MA Crossover"),
+    "kalman":   (KalmanFilterStrategy,   "Kalman Filter"),
+    "momentum": (MomentumStrategy,       "Momentum"),
+}
+
 
 
 def run_multi_asset(
@@ -53,9 +69,17 @@ def run_multi_asset(
     test_years: int,
     bootstrap_seed: int,
     output_dir: Path,
+    strategy: str = "ma",
+    no_dashboard: bool = False,
 ) -> dict[str, tuple[BacktestResult, BenchmarkResult]]:
     """
-    Run MA crossover walk-forward on each ticker independently.
+    Run walk-forward validation on each ticker independently.
+
+    When strategy is "all", each of MA crossover, Kalman filter, and momentum
+    is run on every ticker. The return dict is keyed by "{ticker}:{short_name}"
+    (e.g. "SPY:ma", "SPY:kalman", "SPY:momentum") so all results are accessible
+    from a single dict. When strategy is a single name, the dict is keyed by
+    ticker only.
 
     Args:
         tickers: List of ticker symbols (e.g. ["SPY", "QQQ", "TLT", "GLD"]).
@@ -66,13 +90,31 @@ def run_multi_asset(
         test_years: Test window in years.
         bootstrap_seed: Random seed for bootstrap reproducibility.
         output_dir: Directory to write individual dashboards.
+        strategy: One of "ma", "kalman", "momentum", "all" (default: "ma").
 
     Returns:
-        Dict mapping ticker → (BacktestResult, BenchmarkResult).
+        Dict mapping key → (BacktestResult, BenchmarkResult). Key is ticker
+        when a single strategy is requested, "{ticker}:{short}" when "all".
         Tickers that fail (insufficient data, download error) are omitted with
         a warning printed to stdout.
+
+    Raises:
+        ValueError: If strategy is not one of the recognised names.
     """
+    if strategy not in (*_STRATEGY_MAP, "all"):
+        raise ValueError(
+            f"Unknown strategy {strategy!r}. "
+            f"Valid options: {sorted(_STRATEGY_MAP)} + ['all']."
+        )
+
+    strategies_to_run: list[tuple[str, str]] = (
+        [(k, v[1]) for k, v in _STRATEGY_MAP.items()]
+        if strategy == "all"
+        else [(strategy, _STRATEGY_MAP[strategy][1])]
+    )
+
     results: dict[str, tuple[BacktestResult, BenchmarkResult]] = {}
+    multi_strategy = strategy == "all"
 
     for ticker in tickers:
         print(f"\n  ── {ticker} {'─' * (40 - len(ticker))}")
@@ -94,38 +136,45 @@ def run_multi_asset(
             f"({data.index[0].date()} – {data.index[-1].date()})"
         )
 
-        try:
-            result = walk_forward(
-                data,
-                MovingAverageStrategy(),
-                training_window_years=train_years,
-                testing_window_years=test_years,
-                execution=execution,
-                bootstrap_seed=bootstrap_seed,
-            )
-        except ValueError as exc:
-            print(f"  ⚠  {ticker}: walk_forward failed ({exc})")
-            continue
+        for strat_key, strat_label in strategies_to_run:
+            strat_cls = _STRATEGY_MAP[strat_key][0]
+            result_key = f"{ticker}:{strat_key}" if multi_strategy else ticker
 
-        benchmark = compute_benchmark(result, data, execution=execution)
+            if multi_strategy:
+                print(f"  ··· {strat_label}")
 
-        # Write per-ticker dashboard.
-        dash_path = output_dir / f"dashboard_ma_{ticker.lower()}.html"
-        try:
-            build_dashboard(
-                result,
-                dash_path,
-                strategy_name_override=f"MA Crossover: {ticker}",
-                benchmark=benchmark,
-                price_data=data["close"],
-            )
-            print(f"  Dashboard → {dash_path}")
-        except Exception as exc:
-            # Dashboard failure should not abort the analysis.
-            print(f"  ⚠  Dashboard failed for {ticker}: {exc}")
+            try:
+                result = walk_forward(
+                    data,
+                    strat_cls(),
+                    training_window_years=train_years,
+                    testing_window_years=test_years,
+                    execution=execution,
+                    bootstrap_seed=bootstrap_seed,
+                )
+            except ValueError as exc:
+                print(f"  ⚠  {ticker} ({strat_label}): walk_forward failed ({exc})")
+                continue
 
-        _print_ticker_summary(ticker, result, benchmark)
-        results[ticker] = (result, benchmark)
+            benchmark = compute_benchmark(result, data, execution=execution)
+
+            if not no_dashboard:
+                dash_path = output_dir / f"dashboard_{strat_key}_{ticker.lower()}.html"
+                try:
+                    build_dashboard(
+                        result,
+                        dash_path,
+                        strategy_name_override=f"{strat_label}: {ticker}",
+                        benchmark=benchmark,
+                        price_data=data["close"],
+                    )
+                    print(f"  Dashboard → {dash_path}")
+                except Exception as exc:
+                    # Dashboard failure should not abort the analysis.
+                    print(f"  ⚠  Dashboard failed for {ticker} ({strat_label}): {exc}")
+
+            _print_ticker_summary(ticker, result, benchmark)
+            results[result_key] = (result, benchmark)
 
     return results
 
@@ -148,35 +197,41 @@ def _print_ticker_summary(
     )
     rc = m.reality_check_p_value
     rc_str = f"{rc:.4f}" if not math.isnan(rc) else "N/A"
-    print(f"  RC p: {rc_str}  Max DD: {m.max_drawdown:.1%}  BH DD: {benchmark.benchmark_max_drawdown:.1%}")
+    rc_bh = m.reality_check_bh_p_value
+    rc_bh_str = f"{rc_bh:.4f}" if not math.isnan(rc_bh) else "N/A"
+    print(f"  RC p (cash): {rc_str}  RC p (B&H): {rc_bh_str}  Max DD: {m.max_drawdown:.1%}  BH DD: {benchmark.benchmark_max_drawdown:.1%}")
 
 
 def _print_comparison_table(
     results: dict[str, tuple[BacktestResult, BenchmarkResult]],
+    strategy_label: str = "MA Crossover",
 ) -> None:
     if not results:
         print("\n  No results to compare.")
         return
 
-    print("\n" + "═" * 70)
-    print("  Cross-Asset Comparison: MA Crossover")
-    print("═" * 70)
+    print("\n" + "═" * 80)
+    print(f"  Cross-Asset Comparison: {strategy_label}")
+    print("═" * 80)
     print(
         f"  {'Ticker':<8}  {'Sharpe':>7}  {'Fisher p':>9}  "
-        f"{'RC p':>7}  {'vs BH':>7}  {'IR':>7}  {'Max DD':>8}"
+        f"{'RC(cash)':>9}  {'RC(B&H)':>9}  {'vs BH':>7}  {'IR':>7}  {'Max DD':>8}"
     )
-    print("  " + "─" * 66)
+    print("  " + "─" * 76)
 
     for ticker, (result, benchmark) in results.items():
         m = result.summary_metrics
         rc = m.reality_check_p_value
         rc_str = f"{rc:.4f}" if not math.isnan(rc) else "   N/A"
+        rc_bh = m.reality_check_bh_p_value
+        rc_bh_str = f"{rc_bh:.4f}" if not math.isnan(rc_bh) else "   N/A"
         sig = "✓" if m.combined_p_value < 0.05 else " "
         print(
             f"  {ticker:<8}  "
             f"{m.sharpe_ratio:>7.3f}  "
             f"{m.combined_p_value:>8.4f}{sig}  "
-            f"{rc_str:>7}  "
+            f"{rc_str:>9}  "
+            f"{rc_bh_str:>9}  "
             f"{benchmark.strategy_beats_benchmark_fraction:>7.0%}  "
             f"{benchmark.information_ratio:>7.3f}  "
             f"{m.max_drawdown:>8.1%}"
@@ -198,7 +253,7 @@ def _print_comparison_table(
         print(
             "  Consistent null result across asset classes: "
             "strengthens the SPY finding.\n"
-            "  The MA crossover has no detectable edge on these assets under "
+            f"  {strategy_label} has no detectable edge on these assets under "
             "realistic execution costs."
         )
     elif n_sig == n_total:
@@ -220,9 +275,16 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Cross-asset walk-forward validation. "
-            "Tests MA crossover across multiple tickers and produces a comparison table."
+            "Tests a strategy across multiple tickers and produces a comparison table. "
+            "Use --strategy all to run MA crossover, Kalman filter, and momentum in sequence."
         ),
-        epilog="Example: backtesting-multi --tickers SPY QQQ TLT GLD",
+        epilog=(
+            "Examples:\n"
+            "  backtesting-multi --tickers SPY QQQ TLT GLD\n"
+            "  backtesting-multi --strategy momentum --tickers SPY QQQ TLT GLD\n"
+            "  backtesting-multi --strategy all --tickers SPY QQQ"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--tickers",
@@ -230,6 +292,18 @@ def _parse_args() -> argparse.Namespace:
         default=_DEFAULT_TICKERS,
         metavar="TICKER",
         help=f"Ticker symbols to test (default: {' '.join(_DEFAULT_TICKERS)})",
+    )
+    parser.add_argument(
+        "--strategy",
+        default="ma",
+        choices=["ma", "kalman", "momentum", "all"],
+        help=(
+            "Strategy to run on each ticker. "
+            "'all' runs MA crossover, Kalman filter, and momentum in sequence "
+            "and produces separate dashboards for each. "
+            "Note: Kalman runs take 4-6 minutes per ticker. "
+            "(default: ma)"
+        ),
     )
     parser.add_argument(
         "--start",
@@ -291,16 +365,29 @@ def _parse_args() -> argparse.Namespace:
         metavar="DIR",
         help="Directory for output dashboards (default: current directory)",
     )
+    parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        default=False,
+        help="Skip per-ticker dashboard generation. Results are still printed.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
 
+    strategy_label = (
+        "All Strategies"
+        if args.strategy == "all"
+        else _STRATEGY_MAP[args.strategy][1]
+    )
+
     print(f"\n{'═' * 70}")
-    print("  Cross-Asset Validation  ·  MA Crossover  ·  Walk-Forward")
+    print(f"  Cross-Asset Validation  ·  {strategy_label}  ·  Walk-Forward")
     print(f"{'═' * 70}")
     print(f"  Tickers:     {' '.join(args.tickers)}")
+    print(f"  Strategy:    {strategy_label}")
     print(f"  Period:      {args.start} → {args.end or 'today'}")
     print(f"  Execution:   cost={args.cost:.4f}  slippage={args.slippage:.3f}  delay={args.delay}")
     print(f"  Windows:     {args.train_years}yr train / {args.test_years}yr test")
@@ -323,9 +410,22 @@ def main() -> None:
         test_years=args.test_years,
         bootstrap_seed=args.seed,
         output_dir=output_dir,
+        strategy=args.strategy,
+        no_dashboard=args.no_dashboard,
     )
 
-    _print_comparison_table(all_results)
+    if args.strategy == "all":
+        # Print one table per strategy so the reader can compare strategies
+        # within an asset class as well as across asset classes.
+        for strat_key, (_, strat_label) in _STRATEGY_MAP.items():
+            strat_results = {
+                ticker: v
+                for k, v in all_results.items()
+                if (ticker := k.split(":")[0]) and k.endswith(f":{strat_key}")
+            }
+            _print_comparison_table(strat_results, strategy_label=strat_label)
+    else:
+        _print_comparison_table(all_results, strategy_label=strategy_label)
 
     if not all_results:
         print("  No tickers completed successfully.", file=sys.stderr)

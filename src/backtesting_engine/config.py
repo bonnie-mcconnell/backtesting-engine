@@ -71,6 +71,7 @@ SIGNIFICANCE_THRESHOLD: float = 0.05
 # treat as a guideline, not a hard cutoff - p=0.049 and p=0.051 aren't meaningfully different
 
 BLOCK_BOOTSTRAP_SEED: int = 42
+# arbitrary default; override via --seed for sensitivity analysis
 
 # ---------------------------------------------------------------------------
 # Data

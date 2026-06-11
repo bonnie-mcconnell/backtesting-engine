@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.11.1] - 2026-06-04
+
+### Fixed
+- CHANGELOG was missing v0.9.0-v0.11.0 entries, causing the CI version check to fail.
+- `_sweep_worker` hardcoded `signal_delay=1` regardless of what was passed to
+  `cost_sensitivity_sweep()`. A run with `--delay 0` got correct strategy results but
+  wrong sweep results. `signal_delay` now threads through to the worker correctly.
+- Vacuous assertion in `TestPositionCarryOver` - `assert signals.iloc[0] != 1 or
+  (len(signals) > 1)` always passed since len > 1 is guaranteed. Replaced with
+  `assert signals.iloc[0] == 0`.
+- `BLOCK_BOOTSTRAP_SEED` in `config.py` was the only constant without a justification
+  comment. Added: "arbitrary default; override via --seed for sensitivity analysis".
+
+---
+
+## [0.11.0] - 2026-06-04
+
+### Added
+- `--no-dashboard` flag for both CLIs. Skips `build_dashboard()` and the cost
+  sensitivity heatmap. Results still printed to stdout. Useful for CI and the
+  `--summary-json` workflow where the 4x4.5MB HTML files are not needed.
+- `--workers N` flag for `backtesting-engine`. Exposes `n_workers` from
+  `cost_sensitivity_sweep()` at the CLI. Pass `-1` for all available cores.
+  Previously only accessible via the Python API.
+
+---
+
+## [0.10.0] - 2026-06-04
+
+### Added
+- `--strategy {ma,kalman,momentum,all}` flag for `backtesting-multi`. Previously
+  hardcoded to MA crossover. `--strategy all` runs all three in sequence and produces
+  separate dashboards per strategy per ticker. Keys in the return dict become
+  `"{ticker}:{strategy}"` (e.g. `"SPY:kalman"`) when `all` is used.
+- `make run-multi-all` target.
+
+---
+
+## [0.9.1] - 2026-06-04
+
+### Added
+- `--summary-json PATH` and `--summary-csv PATH` flags for `backtesting-engine`.
+  Written after strategy runs, before the cost sweep. JSON schema: top-level `runs`
+  array, one object per strategy with `ticker`, `date_range`, `execution`, `metrics`
+  (all `MetricsResult` fields plus window counts), and `benchmark`. CSV is the same
+  data flattened with dot-separated keys. NaN writes as empty string; Inf as the
+  string `"Infinity"`. Parent directories created automatically.
+- `backtesting_engine.summary` module (`write_summary_json`, `write_summary_csv`)
+  exported from the top-level package for library use.
+
+---
+
+## [0.9.0] - 2026-06-04
+
+### Added
+- Benchmark-relative Reality Check. `white_reality_check()` now accepts optional
+  `benchmark_returns`. When provided, the RC resamples active returns (strategy minus
+  benchmark) rather than raw returns - testing whether the best candidate beats B&H
+  after data-snooping correction, not just whether it beats cash.
+  `MetricsResult` gains `reality_check_bh_p_value`. Both p-values reported in CLI
+  output and `--summary-json`.
+
+### Fixed
+- Pre-existing `ruff UP037` in `execution.py`: quoted type annotation on
+  `cost_sensitivity_sweep`'s `strategy` parameter.
+
+---
+
 ## [0.8.0] - 2026-05-12
 
 > No 0.7.x release - the fixes below were developed incrementally after 0.6.2 and
@@ -8,7 +76,7 @@
 ### Added
 
 - **Cross-asset validation** (`multi_asset.py`, `tests/test_multi_asset.py`).
-  `make run-multi` runs MA crossover on SPY, QQQ, TLT, and GLD (2005–2024), prints a
+  `make run-multi` runs MA crossover on SPY, QQQ, TLT, and GLD (2005-2024), prints a
   comparison table with Sharpe, Fisher p, RC p, and IR. Tickers that fail data loading
   are skipped with a warning rather than crashing. `run_multi_asset()` added to public API.
 
@@ -22,7 +90,6 @@
 - `BenchmarkResult.per_window_benchmark_sharpes: list[float]` - per-window B&H Sharpe
   values so the dashboard can colour bars against the correct per-window benchmark, not
   the aggregate mean.
-- `tests/test_fixes.py` - 26 new tests covering correctness fixes in this release.
 - `tests/test_integration.py` - end-to-end coverage for walk-forward + benchmark + dashboard.
 - `docs/performance.md` - runtime expectations and profiling notes.
 
@@ -62,8 +129,6 @@
 - `pyproject.toml` now includes `[project.urls]`; version bumped to 0.8.0.
 - `docs/methodology.md`: cross-asset section added; N_PERMUTATIONS production vs test
   distinction documented.
-- `walk_forward.py`: renamed `valid = window_results` to `all_windows` - too easy to
-  confuse with `BacktestResult.valid_windows`.
 - `simulator.py`: removed duplicate `_OpenPosition` dataclass (was identical to the one
   in `execution.py`). Now imports from there.
 - `CONTRIBUTING.md`: fixed the `MomentumStrategy` example - it was showing `fit()` as a
@@ -72,9 +137,9 @@
 
 ### Fixed - crash bugs
 
-- **`_fmt_metric` crashed with `±inf` values** - was passing `"∞"` as a format spec to
+- **`_fmt_metric` crashed with `+-inf` values** - was passing `"inf"` as a format spec to
   `format()`, which raises `ValueError: Unknown format code`. Changed to return the
-  `"∞ (unbounded)"` string directly.
+  string directly.
 - **`_min_rows` used module-level defaults, not runtime values** - `_min_rows` in
   `main.py` read `TRAINING_WINDOW_YEARS` and `TESTING_WINDOW_YEARS` at definition time.
   If `--train-years` or `--test-years` were passed on the CLI, the minimum row check
@@ -95,8 +160,6 @@
 ## [0.6.2] - 2026-05-06
 
 ### Fixed
-- `test_final_fixes.py` docstring referenced "v0.6.1 → v0.6.2" but version was never
-  bumped. Now 0.6.2.
 - Last hardcoded `42` in `execution.py` docstring replaced with `BLOCK_BOOTSTRAP_SEED`.
 
 ### Added
@@ -168,11 +231,11 @@
   explanation instead of just making every subsequent run 30 seconds slower.
 
 ### Added
-- `TestReturnsFromSignals` (5 tests) - specifically exercises the hold-state semantics
+- 5 new tests for `returns_from_signals` - specifically exercises hold-state semantics
   where `signal=0` must inherit the previous position, not reset to flat. Uncovered a
   latent off-by-one not covered by the integration tests.
-- `TestWalkForwardInputValidation` (5 tests) - verifies `ValueError` is raised with a
-  message matching "positive" for zero and negative window year values.
+- 5 new tests for walk-forward input validation - verifies `ValueError` is raised with
+  a message matching "positive" for zero and negative window year values.
 
 ---
 
@@ -186,7 +249,7 @@
   loss at the end of window N followed by 10% at the start of N+1 is a -19% compound
   drawdown, not -10%.
 - `metrics.py` Calmar now uses geometric compounding `prod(1+r)^(252/n) - 1` rather than
-  `(1+mean(r))^252 - 1`. The arithmetic version overstates annualised return by 2–5pp at
+  `(1+mean(r))^252 - 1`. The arithmetic version overstates annualised return by 2-5pp at
   typical daily volatility (Jensen's inequality).
 - `dashboard.py` buy-and-hold equity curve was flat in no-trade windows. Added `price_data`
   parameter so the B&H line uses actual price changes on every bar.
@@ -196,10 +259,10 @@
 ## [0.5.1] - 2026-04-20
 
 ### Fixed
-- Sortino ratio was using `std(downside_returns, ddof=1)` - the dispersion *among*
-  negative returns. Corrected to downside deviation `sqrt(mean(min(r-T, 0)²))` per
+- Sortino ratio was using `std(downside_returns, ddof=1)` - the dispersion among
+  negative returns. Corrected to downside deviation `sqrt(mean(min(r-T, 0)^2))` per
   Sortino & van der Meer (1991). For a strategy with small consistent losses, the old
-  formula had std→0 and Sortino→∞. All previously computed Sortino values were wrong.
+  formula had std->0 and Sortino->inf. All previously computed Sortino values were wrong.
 - Information ratio in `benchmark.py` was computing `mean(sharpe_diffs)/std(sharpe_diffs)`
   - a dimensionless "Sharpe of Sharpe differences". Corrected to
   `mean(active_returns)/std(active_returns)*sqrt(252)` per Grinold & Kahn (2000).
@@ -214,13 +277,13 @@
 
 ### Added
 - `MomentumStrategy` - time-series momentum with calibrated lookback. Grid-searches
-  T ∈ {20, 40, 60, 90, 120, 180, 250} trading days per training window. Implements
+  T in {20, 40, 60, 90, 120, 180, 250} trading days per training window. Implements
   `candidate_test_returns()` so White's RC covers the full search universe.
   Signal: buy when T-day log-return crosses positive, sell when it crosses negative.
   Reference: Moskowitz, Ooi & Pedersen (2012).
 - `cost_sensitivity_sweep()` parallelism - `n_workers > 1` runs each (cost, slippage)
   pair concurrently via `ProcessPoolExecutor`. Pass `n_workers=-1` for all CPUs.
-  A 5×5 grid goes from ~12 minutes to ~2 minutes on an 8-core machine.
+  A 5x5 grid goes from ~12 minutes to ~2 minutes on an 8-core machine.
 - Local Parquet caching in `~/.cache/backtesting-engine/`. First call downloads from
   yfinance; subsequent calls within 24 hours read from cache.
 - `build_dashboard()` now accepts `benchmark: BenchmarkResult` - adds B&H reference

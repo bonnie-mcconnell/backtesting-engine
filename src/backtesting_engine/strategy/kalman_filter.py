@@ -105,8 +105,14 @@ class KalmanFilterStrategy(BaseStrategy):
                 },
             )
 
-        self.q_ = float(np.exp(result.x[0]))
-        self.r_ = float(np.exp(result.x[1]))
+        # Floor to _MIN_VARIANCE: _kalman_log_likelihood applies this floor
+        # internally, so the objective is flat for any (q, r) below it and
+        # Nelder-Mead can wander arbitrarily far into that flat region with
+        # no signal to stop. Flooring here keeps the stored parameters
+        # consistent with what was actually optimised, and keeps
+        # _kalman_filter's s = p_pred + r safely away from zero at inference.
+        self.q_ = max(float(np.exp(result.x[0])), _MIN_VARIANCE)
+        self.r_ = max(float(np.exp(result.x[1])), _MIN_VARIANCE)
         self.log_likelihood_ = float(-result.fun)
         return self
 

@@ -318,8 +318,7 @@ def main() -> None:
             )
             print(f"\n  Dashboard → {momentum_dash}\n")
 
-    ready = [r for r in [ma_result, kalman_result, momentum_result] if r is not None]
-    if len(ready) >= 2 and ma_result is not None and kalman_result is not None and momentum_result is not None:
+    if ma_result is not None and kalman_result is not None and momentum_result is not None:
         _section("Comparative Summary")
         _print_comparison(ma_result, kalman_result, momentum_result)
 
@@ -524,19 +523,21 @@ def _print_comparison(
     def row(label: str, ma_v: str, ka_v: str, mo_v: str) -> None:
         print(f"  {label:<28}  {ma_v:>10}  {ka_v:>10}  {mo_v:>10}")
 
-    def best3(a: float, b: float, c: float, higher_is_better: bool = True) -> tuple[str, str, str]:
+    def best3(
+        a: float, b: float, c: float, higher_is_better: bool = True, fmt: str = ".3f"
+    ) -> tuple[str, str, str]:
         """Return (ma_str, kalman_str, momentum_str) with a checkmark on the best finite value."""
         finite = [(i, v) for i, v in enumerate([a, b, c])
                   if not math.isnan(v) and abs(v) != float("inf")]
         if not finite:
-            return _fmt_metric(a), _fmt_metric(b), _fmt_metric(c)
+            return _fmt_metric(a, fmt), _fmt_metric(b, fmt), _fmt_metric(c, fmt)
 
         best_val = max(v for _, v in finite) if higher_is_better else min(v for _, v in finite)
         best_idxs = {i for i, v in finite if v == best_val}
 
         results = []
         for i, v in enumerate([a, b, c]):
-            s = _fmt_metric(v)
+            s = _fmt_metric(v, fmt)
             if i in best_idxs:
                 s += " \u2713"
             results.append(s)
@@ -562,9 +563,9 @@ def _print_comparison(
     ma_s, ka_s, mo_s = best3(ma_m.sortino_ratio, ka_m.sortino_ratio, mo_m.sortino_ratio)
     row("Sortino ratio", ma_s, ka_s, mo_s)
 
-    ma_s, ka_s, mo_s = best3(ma_m.max_drawdown, ka_m.max_drawdown, mo_m.max_drawdown,
-                               higher_is_better=False)
-    row("Max drawdown", f"{ma_m.max_drawdown:.2%}", f"{ka_m.max_drawdown:.2%}", f"{mo_m.max_drawdown:.2%}")
+    ma_dd, ka_dd, mo_dd = best3(ma_m.max_drawdown, ka_m.max_drawdown, mo_m.max_drawdown,
+                                 higher_is_better=True, fmt=".2%")
+    row("Max drawdown", ma_dd, ka_dd, mo_dd)
 
     ma_s, ka_s, mo_s = best3(ma_m.calmar_ratio, ka_m.calmar_ratio, mo_m.calmar_ratio)
     row("Calmar ratio", ma_s, ka_s, mo_s)

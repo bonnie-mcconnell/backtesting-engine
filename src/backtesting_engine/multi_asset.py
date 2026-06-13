@@ -59,7 +59,6 @@ _STRATEGY_MAP: dict[str, tuple[type[BaseStrategy], str]] = {
 }
 
 
-
 def run_multi_asset(
     tickers: list[str],
     start: str,
@@ -419,9 +418,9 @@ def main() -> None:
         # within an asset class as well as across asset classes.
         for strat_key, (_, strat_label) in _STRATEGY_MAP.items():
             strat_results = {
-                ticker: v
+                k.split(":")[0]: v
                 for k, v in all_results.items()
-                if (ticker := k.split(":")[0]) and k.endswith(f":{strat_key}")
+                if k.endswith(f":{strat_key}")
             }
             _print_comparison_table(strat_results, strategy_label=strat_label)
     else:

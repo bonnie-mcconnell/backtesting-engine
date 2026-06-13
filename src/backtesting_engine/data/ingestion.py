@@ -120,7 +120,7 @@ def _load_from_cache(
 
     try:
         return pd.read_parquet(path)
-    except (OSError, Exception):
+    except Exception:
         # Corrupt or unreadable cache file - re-download. We catch broadly here
         # because pyarrow raises different exception types for corrupt files.
         # The failure is non-fatal: returning None triggers a fresh download.

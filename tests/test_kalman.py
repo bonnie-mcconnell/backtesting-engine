@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from backtesting_engine.strategy.kalman_filter import (
+    _MIN_VARIANCE,
     KalmanFilterStrategy,
     _kalman_filter,
     _kalman_log_likelihood,
@@ -155,6 +156,25 @@ class TestKalmanFit:
     def test_invalid_init_params_raise(self) -> None:
         with pytest.raises(ValueError):
             KalmanFilterStrategy(q_init=-1.0, r_init=1e-2)
+
+    def test_calibrated_params_floored_at_min_variance(self) -> None:
+        # _kalman_log_likelihood floors q and r to _MIN_VARIANCE internally,
+        # so the objective is flat below that threshold and Nelder-Mead can
+        # return raw values arbitrarily far under it. fit() must floor q_
+        # and r_ to match, or _kalman_filter's variance recursion can divide
+        # by zero on the next call. Near-constant data drives both toward
+        # zero, which is the regime that exercises this floor.
+        strategy = KalmanFilterStrategy()
+        flat_data = _make_data([100.0] * 300)
+        strategy.fit(flat_data)
+
+        assert strategy.q_ >= _MIN_VARIANCE
+        assert strategy.r_ >= _MIN_VARIANCE
+
+        # generate_signals must not raise even with calibrated params from
+        # this degenerate case.
+        signals = strategy.generate_signals(flat_data)
+        assert np.isfinite(signals.to_numpy(dtype=float)).all()
 
 
 # ---------------------------------------------------------------------------

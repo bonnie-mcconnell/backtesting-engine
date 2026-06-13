@@ -3,11 +3,15 @@ Correctness invariants: tests that guard against specific failure modes that
 are easy to introduce and hard to catch with generic assertions.
 
 Each test documents exactly what breaks if the invariant is violated:
-  - negative cash from naive position sizing
-  - benchmark using a hardcoded cost rate instead of ExecutionConfig
-  - flat-cash windows excluded from the summary (biases Sharpe upward)
-  - momentum RC evaluating all candidates with the fitted lookback (wrong)
-  - bootstrap null not centred (p ≈ 0.5 for any positive-drift series)
+  - position sizing must not create leverage (cash going negative)
+  - the benchmark must use the same cost rate as the strategy's
+    ExecutionConfig, not a hardcoded constant
+  - flat-cash windows must be included in the summary, not excluded
+    (excluding them biases aggregate Sharpe upward)
+  - each momentum RC candidate must be evaluated with its own lookback,
+    not the fitted winner's
+  - the block bootstrap null must be centred (otherwise p ~= 0.5 for any
+    positive-drift series, regardless of significance)
 """
 
 import math
@@ -52,10 +56,13 @@ def _ohlcv(n: int = 20, base: float = 100.0) -> pd.DataFrame:
 
 class TestPositionSizingNoCashOverdraft:
     """
-    The old formula spent cash * POSITION_SIZE_FRACTION + buy_fee, which left
-    cash < 0 (slight leverage) after every trade.  The correct formula is:
+    Position sizing must not create leverage. The share count is computed
+    as:
         position_value = cash * fraction / (1 + cost_rate)
-    so that position_value + buy_cost == cash * fraction exactly.
+    so that position_value + buy_cost == cash * fraction exactly, leaving
+    cash >= 0 after every buy. Spending cash * fraction on the position
+    itself and adding the fee on top would leave cash slightly negative
+    after every trade.
     """
 
     def test_cash_never_negative_after_buy(self) -> None:
@@ -105,11 +112,10 @@ class TestPositionSizingNoCashOverdraft:
 
 class TestBenchmarkCostParity:
     """
-    The old benchmark._buy_and_hold_returns() imported the global
-    TRANSACTION_COST_RATE constant directly, ignoring the ExecutionConfig
-    passed to the strategy.  A cost-sweep run would therefore use different
-    cost rates for the strategy and the benchmark, making the comparison
-    non-apples-to-apples.
+    The benchmark must use the same cost rate as the strategy's
+    ExecutionConfig, not a hardcoded constant. Otherwise a cost-sensitivity
+    sweep would apply different cost rates to the strategy and the
+    benchmark, making the comparison non-apples-to-apples.
     """
 
     def test_benchmark_lower_return_with_higher_cost(self) -> None:
@@ -153,10 +159,10 @@ class TestBenchmarkCostParity:
 class TestFlatCashWindows:
     """
     A walk-forward window where no trades execute is a valid state: the
-    strategy held cash for the full period.  The old code marked these windows
-    as skipped=True and excluded them from summary metrics, biasing the
-    aggregate Sharpe upward.  The fix includes them as flat-cash windows with
-    Sharpe=0 and p=1.0.
+    strategy held cash for the full period. These windows are included in
+    summary metrics as flat-cash windows with Sharpe=0 and p=1.0, rather
+    than excluded - excluding them would bias the aggregate Sharpe upward
+    by dropping the periods where the strategy correctly stayed out.
     """
 
     def test_no_trade_window_sharpe_is_zero(self) -> None:
@@ -210,14 +216,15 @@ class TestFlatCashWindows:
 
 class TestMomentumRCCandidateLookback:
     """
-    The original candidate_test_returns() in MomentumStrategy called
-    self.generate_signals(combined) inside the candidate loop, which always
-    used self.lookback_ (the fitted winner) regardless of the candidate lb.
-    This meant the RC matrix was a constant - every candidate was evaluated
-    with the same parameters - making the RC p-value meaningless.
+    Each RC candidate must be evaluated with its own lookback, not the
+    fitted winner's. candidate_test_returns() calls _momentum_signals()
+    directly with each candidate's lb rather than going through
+    generate_signals(), which always uses self.lookback_.
 
-    The fix calls _momentum_signals(combined_close, lb) directly so each
-    candidate is genuinely evaluated with its own lookback.
+    If every candidate used the same lookback, the RC candidate matrix
+    would be constant across columns and the resulting p-value would be
+    meaningless - White's RC tests the maximum over a universe of distinct
+    candidates, not k copies of the same series.
     """
 
     def test_rc_candidates_differ_by_lookback(self) -> None:
@@ -237,9 +244,9 @@ class TestMomentumRCCandidateLookback:
         common = a.index.intersection(b.index)
         assert len(common) > 0
 
-        # They must not be identical (would indicate the bug is still present).
+        # Distinct lookbacks must produce distinct return series.
         assert not np.allclose(a.loc[common].values, b.loc[common].values), (
-            "All RC candidates are identical - the momentum lookback bug may still be present. "
+            "RC candidates with different lookbacks produced identical returns. "
             "Each candidate should be evaluated with its own lookback parameter."
         )
 
@@ -260,11 +267,12 @@ class TestMomentumRCCandidateLookback:
         b = cands[keys[1]]
         common = a.index.intersection(b.index)
 
-        # Candidates with different lookbacks must produce different signals.
-        # If they were identical it would mean every candidate still uses self.lookback_.
+        # Distinct lookbacks must produce distinct return series, even when
+        # candidates are evaluated through the context-prepended code path.
         assert not np.allclose(a.loc[common].values, b.loc[common].values), (
-            "All RC candidates with context are identical - the momentum lookback "
-            "bug may still be present in the context code path."
+            "RC candidates with context produced identical returns across "
+            "lookbacks. Each candidate should be evaluated with its own "
+            "lookback parameter even when context_data is provided."
         )
 
 
@@ -274,12 +282,12 @@ class TestMomentumRCCandidateLookback:
 
 class TestBootstrapNullCentering:
     """
-    The original bootstrap resampled raw returns, inheriting the strategy's
-    observed mean.  The bootstrap Sharpe distribution was therefore centred
-    at the observed Sharpe rather than at zero, so p(boot >= observed) ≈ 0.5
-    for any positive-drift strategy regardless of signal quality.
-
-    The fix centres returns before resampling so H₀ is explicitly zero-mean.
+    The block bootstrap centres returns (subtracts the sample mean) before
+    resampling, so the null hypothesis is explicitly zero-mean. Without
+    centring, the bootstrap inherits the strategy's observed mean and the
+    resampled Sharpe distribution sits at the observed Sharpe rather than
+    at zero - giving p(boot >= observed) ~= 0.5 for any positive-drift
+    strategy regardless of signal quality.
     """
 
     def test_zero_mean_returns_give_p_near_half(self) -> None:

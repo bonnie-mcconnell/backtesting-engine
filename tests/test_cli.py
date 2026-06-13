@@ -419,7 +419,7 @@ class TestSourceFileEncoding:
 
 
 # ---------------------------------------------------------------------------
-# --no-dashboard and --workers flags (v0.11.0)
+# --no-dashboard and --workers flags
 # ---------------------------------------------------------------------------
 
 class TestNoDashboardFlag:
@@ -558,3 +558,61 @@ class TestNoDashboardFlag:
         assert len(build_calls) == 1, (
             f"Expected 1 build_dashboard call, got {len(build_calls)}"
         )
+
+
+# ── _print_comparison: max drawdown checkmark ─────────────────────────────
+
+class TestPrintComparisonMaxDrawdown:
+    """The Max drawdown row of the comparative table must show the checkmark
+    on the value closest to zero (the smallest drawdown), like every other
+    metric row shows a checkmark on its best value.
+    """
+
+    def _result(self, max_drawdown: float):
+        from backtesting_engine.models import BacktestResult, MetricsResult
+        metrics = MetricsResult(
+            sharpe_ratio=1.0,
+            sortino_ratio=1.0,
+            max_drawdown=max_drawdown,
+            calmar_ratio=1.0,
+            omega_ratio=1.0,
+            p_value=0.5,
+            combined_p_value=0.5,
+        )
+        return BacktestResult(
+            strategy_name="Test",
+            window_results=[],
+            summary_metrics=metrics,
+        )
+
+    def test_smallest_drawdown_gets_checkmark(self, capsys: "pytest.CaptureFixture[str]") -> None:
+        from backtesting_engine.main import _print_comparison
+
+        ma = self._result(-0.30)
+        kalman = self._result(-0.10)  # closest to zero - smallest drawdown, should get the checkmark
+        momentum = self._result(-0.40)
+
+        _print_comparison(ma, kalman, momentum)
+        out = capsys.readouterr().out
+
+        dd_line = next(line for line in out.splitlines() if "Max drawdown" in line)
+        assert "10.00%" in dd_line and "\u2713" in dd_line
+        # Checkmark must sit with the Kalman (smallest-drawdown) column, not MA or momentum.
+        assert "30.00% \u2713" not in dd_line
+        assert "40.00% \u2713" not in dd_line
+        assert "10.00% \u2713" in dd_line
+
+    def test_drawdown_shown_as_percentage(self, capsys: "pytest.CaptureFixture[str]") -> None:
+        from backtesting_engine.main import _print_comparison
+
+        ma = self._result(-0.314)
+        kalman = self._result(-0.20)
+        momentum = self._result(-0.50)
+
+        _print_comparison(ma, kalman, momentum)
+        out = capsys.readouterr().out
+
+        dd_line = next(line for line in out.splitlines() if "Max drawdown" in line)
+        # Must be percentage-formatted (-31.40%), not raw decimal (-0.314).
+        assert "31.40%" in dd_line
+        assert "-0.314" not in dd_line

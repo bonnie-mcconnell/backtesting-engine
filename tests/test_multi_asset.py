@@ -241,7 +241,7 @@ class TestStrategyParameter:
     """
 
     def test_default_strategy_is_ma(self, tmp_path: Path) -> None:
-        # Default behaviour must be unchanged from v0.9.x - no strategy arg.
+        # No --strategy arg should still produce MA results, not error out.
         with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data), \
              patch("backtesting_engine.multi_asset.validate_data"):
             results = run_multi_asset(

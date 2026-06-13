@@ -28,8 +28,7 @@ The dashboard has six panels arranged in a responsive grid:
 The equity curve panel includes a Range Selector allowing the user to zoom
 to 1Y / 3Y / 5Y / All, and a Range Slider for fine-grained navigation.
 
-All panels share a unified dark theme and are linked where appropriate -
-clicking a window bar in panel 4 will be noted for future interactivity.
+All panels share a unified dark theme.
 """
 
 from __future__ import annotations
@@ -285,10 +284,11 @@ def _build_equity_curves(
                 bm_running = float(bm_seg.iloc[-1])
                 continue
 
-        # Fallback: approximate from portfolio index if no price data.
-        # This uses the price path implied by the window's date range.
+        # Fallback: no price data for this window, so the benchmark curve
+        # is held flat (no information to project price movement from).
+        # This only affects windows where price_data doesn't cover the
+        # test range - normal runs always pass price_data.
         n = len(pv)
-        # Use uniform log-linear interpolation as a neutral approximation.
         bm_vals = bm_running * np.ones(n)
         bm_seg = pd.Series(bm_vals, index=pv.index)
         bm_segments.append(bm_seg)
@@ -599,9 +599,8 @@ def _add_param_evolution(
     # further entries cycle through a fallback list.
     palette = [_PARAM_SHORT, _PARAM_LONG, "#A78BFA", "#34D399", "#F59E0B"]
 
-    # Plot the first spec entry on the primary Y-axis.
-    # If there is a second entry AND it has a very different scale (e.g. SNR vs
-    # log-likelihood), it is plotted on a secondary Y-axis via yaxis2.
+    # Plot the first spec entry on the primary Y-axis. Remaining entries
+    # (if any) are plotted on the same axis below.
     primary_label, primary_key = spec[0]
     primary_vals = [
         float(cast(float, p.get(primary_key, float("nan"))))

@@ -19,19 +19,16 @@ than sufficient for all of these properties while being ~50× faster.
 The autouse session-scoped fixture below patches N_PERMUTATIONS globally for
 the entire test session. It targets both sites where the value is read at
 call time:
-  - backtesting_engine.metrics   (_monte_carlo_p_value reads N_PERMUTATIONS
-    as a bare name in the function body - evaluated at call time, not import)
-  - backtesting_engine.reality_check (white_reality_check reads N_PERMUTATIONS
-    in the function body via `n_iters = n_bootstrap if n_bootstrap is not None
-    else N_PERMUTATIONS` - also at call time)
+  - backtesting_engine.metrics, _monte_carlo_p_value
+  - backtesting_engine.reality_check, white_reality_check
 
-IMPORTANT: white_reality_check formerly had `n_bootstrap: int = N_PERMUTATIONS`
-as a default argument, which Python evaluates once at function-definition time
-(module import), not at call time. That meant patching the module attribute had
-no effect. The signature was changed to `n_bootstrap: int | None = None` with
-the module attribute read in the function body, so the patch now works.
+Both read N_PERMUTATIONS as a bare module-level name inside the function body,
+so patching the module attribute affects every subsequent call. This only
+works because neither function takes N_PERMUTATIONS as a default argument -
+default arguments are evaluated once at definition time, which would freeze
+the value before this fixture ever runs. Keep it that way.
 
-Without this patch, 49 walk_forward() calls × ~3 windows × 10,000 iterations
+Without this patch, 49 walk_forward() calls x ~3 windows x 10,000 iterations
 each (both bootstrap AND RC) = ~1.47M bootstrap iterations, taking 90+ minutes
 across two Python versions in CI. With 200 permutations the full suite runs in
 a few minutes locally and comfortably inside the CI timeout.
@@ -87,14 +84,8 @@ def _patch_n_permutations() -> None:
     scope="session": patched once for the full run, not reset between tests.
 
     Both functions read N_PERMUTATIONS as a module-level name in the function
-    body (not as a frozen default argument), so patching the module attribute
-    takes effect on every subsequent call.
-
-    The _monte_carlo_p_value function in metrics.py always used this pattern.
-    white_reality_check in reality_check.py originally had N_PERMUTATIONS as a
-    default argument (evaluated at import time), which made patching ineffective.
-    That was fixed by changing the signature to `n_bootstrap: int | None = None`
-    with the module attribute read inside the function body.
+    body rather than as a frozen default argument, so patching the module
+    attribute here takes effect on every subsequent call.
 
     The original value is not restored because the test process exits after
     the session; restoring it would add complexity with no benefit.

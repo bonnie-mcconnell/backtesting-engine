@@ -234,19 +234,12 @@ class TestMonteCarloPValue:
         assert 0.0 <= p <= 1.0
 
     def test_p_value_near_half_for_iid_returns(self) -> None:
-        # The block bootstrap p-value for Sharpe tests autocorrelation exploitation,
-        # NOT raw alpha. For iid returns, each resampled block preserves the mean,
-        # so the null Sharpe distribution is centred near the observed Sharpe and
-        # After the null-centering fix the block bootstrap correctly tests
-        # H₀: true mean return = 0.  Returns drawn from N(0.005, 0.01²) have
-        # an annualised Sharpe of ~0.005/0.01 × sqrt(252) ≈ 0.79, which is
-        # genuinely above zero.  The centred bootstrap should therefore produce
-        # a *low* p-value (strong evidence against H₀), not p≈0.5.
-        #
-        # The previous test expected p≈0.5 because the old (broken) bootstrap
-        # resampled from the un-centred distribution and inherited the positive
-        # drift, making every bootstrapped Sharpe ≈ the observed Sharpe.
-        # That behaviour was a bug, not a feature.
+        # The block bootstrap p-value for Sharpe tests autocorrelation
+        # exploitation, not raw alpha - returns are centred before resampling
+        # so the null tests H0: true mean return = 0, not H0: Sharpe = observed
+        # Sharpe. Returns drawn from N(0.005, 0.01^2) have an annualised Sharpe
+        # of ~0.005/0.01 * sqrt(252) ~= 0.79, well above zero, so the centred
+        # bootstrap should produce a *low* p-value here, not p ~= 0.5.
         rng = np.random.default_rng(0)
         returns = rng.normal(loc=0.005, scale=0.01, size=252)
         p = _monte_carlo_p_value(returns)

@@ -47,8 +47,9 @@ def white_reality_check(
     Args:
         candidate_returns: Array of shape (T, k) where T is the number of
             time periods (days) and k is the number of candidate strategies.
-            Each column is the daily return series of one candidate.
-            The first column is assumed to be the best (selected) strategy.
+            Each column is the daily return series of one candidate. Column
+            order does not matter - the test statistic is the max over all
+            columns, computed fresh from the data.
         n_bootstrap: Number of stationary bootstrap replications. Defaults to
             N_PERMUTATIONS (read at call time, not at import time). Pass an
             explicit value to override. The test suite patches the module-level

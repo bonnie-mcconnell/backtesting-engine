@@ -124,7 +124,7 @@ py-spy record -o profile.svg -- python -m backtesting_engine.main --strategy kal
 open profile.svg  # flame graph in browser
 ```
 
-The top entries will be `_kalman_filter_log_likelihood` and `scipy.optimize.minimize`.
+The top entries will be `_kalman_log_likelihood` and `scipy.optimize.minimize`.
 
 ---
 
@@ -136,7 +136,7 @@ Memory is not a concern for single-asset daily data:
 - Full `BacktestResult` with 26 windows: ~5–10 MB
 - Dashboard HTML (embedded Plotly JS ~3 MB + data): ~4–8 MB
 
-For multi-asset runs (not yet implemented), memory scales linearly with the number
+For multi-asset runs, memory scales linearly with the number
 of assets. A 100-asset universe over 30 years would be ~25 MB of price data, still
 well within typical RAM limits.
 
@@ -144,24 +144,16 @@ well within typical RAM limits.
 
 ## CI runtime
 
-`make test` runs 468 tests in a few minutes on a modern machine. On this Windows
-development machine, `poetry run pytest -q` completed in 2:14.
+`make test` runs 472 tests in a few minutes on a modern machine.
 
 `N_PERMUTATIONS=10_000` in `config.py` is the production value used by `make run`.
-Tests use a session-scoped fixture in `conftest.py` that patches this to 200 for the duration of
-the test run. 200 permutations is sufficient to verify that p-values fall in [0,1], respond
-correctly to high/low-drift inputs, and are reproducible. That is all tests need.
+Tests use a session-scoped fixture in `conftest.py` that patches this to 200 for the
+duration of the test run. 200 permutations is sufficient to verify that p-values fall
+in [0,1], respond correctly to high/low-drift inputs, and are reproducible. That is
+all tests need.
 
-There is a subtle implementation detail: `white_reality_check` originally had
-`n_bootstrap: int = N_PERMUTATIONS` as a default argument. Python evaluates default arguments
-at function-definition time (import), not at call time, so patching the module attribute
-after import had no effect. The fix: `n_bootstrap: int | None = None` with `N_PERMUTATIONS`
-read inside the function body. `_monte_carlo_p_value` in `metrics.py` already used this
-pattern correctly.
-
-Without both patches the suite can take 90+ minutes across two Python versions in CI. With both
-patches it completes comfortably inside the 20-minute CI timeout with no reduction in test correctness.
-
-The CI workflow has `timeout-minutes: 20` as a safety net. If the suite ever approaches this
-limit, identify slow tests with `pytest --durations=10` and promote expensive fixtures to
-`scope="session"` in `conftest.py`.
+Without the patch the suite takes 90+ minutes across two Python versions in CI. With it
+the suite completes comfortably inside the 20-minute CI timeout with no reduction in
+test correctness. The CI workflow has `timeout-minutes: 20` as a safety net. If the
+suite ever approaches this limit, identify slow tests with `pytest --durations=10` and
+promote expensive fixtures to `scope="session"` in `conftest.py`.

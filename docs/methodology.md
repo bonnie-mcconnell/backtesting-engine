@@ -29,6 +29,13 @@ The RC runs on signal returns by design. This tests pre-cost alpha - if a strate
 
 Each test window produces a p-value. Returns are centred (mean subtracted) before resampling - without this, p(boot_sharpe ≥ observed_sharpe) ≈ 0.5 for any positive-drift strategy regardless of signal quality. Centring anchors H₀ at zero explicitly. Blocks of length √n are resampled to preserve autocorrelation structure.
 
+Two different block bootstrap variants are used:
+
+- **Per-window Sharpe p-value** (`metrics.py`): circular block bootstrap (Kunsch 1989). Fixed block length ⌊√n⌋, circular wrapping to avoid edge effects. Simple and fast for a single series.
+- **White's RC** (`reality_check.py`): stationary bootstrap (Politis & Romano 1994). Geometrically distributed block lengths with mean √n. This is the method used in White (2000) and is preferred for the RC candidate matrix because it preserves the joint distribution of candidates more faithfully when block lengths vary across columns.
+
+The practical implication: Fisher p-values (from the circular block bootstrap) and RC p-values (from the stationary bootstrap) are not computed by the same method, so they are not strictly comparable at the level of individual draws. Both are valid tests of their respective H₀; the choice of which variant to use for each test follows the established literature.
+
 Power per window is limited - 252 daily returns isn't much data. Fisher combination is what gives the test meaningful power.
 
 ---
@@ -38,6 +45,8 @@ Power per window is limited - 252 daily returns isn't much data. Fisher combinat
 χ² = −2 × Σ ln(pᵢ), distributed as χ²(2k) under H₀. Aggregates evidence across windows without requiring a single long return series.
 
 Fisher assumes independence. Walk-forward windows share regime exposure, so this is only approximate. Treat it as directional evidence, not a precise significance threshold. The output labels it "(approx: windows not fully independent)".
+
+**Statistical power.** Power per window is limited (252 daily returns isn't much data - single-window power to detect Sharpe 0.5 is only ~13%). Fisher combination is what gives the test meaningful power: with 26 windows of 252 bars each, the combined test has approximately 76% power to detect a consistent annualised Sharpe of 0.5 at α=0.05 (iid approximation, one-sided). A consistent Sharpe of 0.7 gives ~95% power. This means the null result on the MA and momentum strategies is informative - if either had a genuine edge comparable to buy-and-hold (~0.52 Sharpe over the test period), the test would detect it with high probability. What the test cannot rule out is a weaker or intermittent edge (Sharpe < 0.3, or an edge that only appeared in a few windows).
 
 ---
 
@@ -51,7 +60,7 @@ Two nulls are reported:
 
 **Buy-and-hold null (RC p vs B&H):** Resamples active returns (candidate returns minus buy-and-hold returns) rather than raw returns. Tests whether the best candidate beats a passive investor after data-snooping correction. This is the more relevant test for an active equity strategy. A strategy that has low RC p vs cash but high RC p vs B&H is capturing beta rather than generating alpha.
 
-RC p-values depend on the candidate grid. A narrower grid inflates the RC p-value; a wider grid deflates it. The grids are fixed in the strategy classes and documented there.
+RC p-values depend on the candidate grid. A wider grid inflates the RC p-value - more candidates means the bootstrap null distribution of the maximum is larger, so the observed max more easily falls within it; a narrower grid deflates it. The grids are fixed in the strategy classes and documented there.
 
 ---
 
@@ -104,6 +113,8 @@ The comparison table doesn't apply a multiple-testing correction across tickers;
 ---
 
 ## Known limitations
+
+**Parameter instability.** The best in-sample MA pair and momentum lookback vary substantially across walk-forward windows (see RESULTS.md). If the strategy had a genuine stable edge, optimal parameters would cluster. The observed variation is consistent with fitting noise rather than signal - which is one reason the out-of-sample results are poor.
 
 **Single-asset results.** SPY 1993–2024 is predominantly a bull market. Results may not generalise.
 

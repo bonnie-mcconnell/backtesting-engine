@@ -53,7 +53,7 @@ _build_summary_metrics()
   ├─ white_reality_check() over all windows' candidate matrices
   ├─ mean Sharpe / Sortino / Omega across windows
   ├─ worst-case max_drawdown (not mean)
-  └─ Calmar from stitched return series
+  └─ Calmar from stitched return series (concatenated across windows, not mean of per-window Calmars)
 
 BacktestResult → compute_benchmark() → build_dashboard()
 ```

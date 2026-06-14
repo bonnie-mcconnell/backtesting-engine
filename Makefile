@@ -85,8 +85,9 @@ run-multi-all:
 	  --seed 42 \
 	  --output-dir results/
 
-## Run with a custom ticker, date range, and execution config
+## Run with a custom ticker and date range (all other flags use defaults)
 ## Example: make run-custom TICKER=QQQ START=2000-01-01 END=2023-12-31
+## For full control, call the CLI directly: poetry run backtesting-engine --help
 run-custom:
 	poetry run backtesting-engine \
 	  --ticker $(TICKER) \

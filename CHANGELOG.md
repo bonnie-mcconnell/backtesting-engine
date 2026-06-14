@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.2] - 2026-06-13
+
+### Fixed
+- `KalmanFilterStrategy.fit()` stored uncalibrated `q_`/`r_` straight from the
+  optimiser without applying the floor that `_kalman_log_likelihood` applies
+  internally. Because the objective is flat for any `(q, r)` below
+  `_MIN_VARIANCE`, Nelder-Mead could return values arbitrarily close to zero
+  with no gradient signal to stop it. On near-constant price data this caused
+  `_kalman_filter` to divide by zero at inference (`s = p_pred + r == 0`).
+  `q_`/`r_` are now floored to `_MIN_VARIANCE` at calibration time.
+- `_print_comparison`'s "Max drawdown" row discarded the annotated output of
+  `best3()` and printed raw values, so it never showed the best-value
+  checkmark that every other metric row shows. It also compared in the wrong
+  direction - drawdowns are stored as negative numbers, so the best (smallest
+  magnitude) value is the *largest*, not the smallest. `best3()` now accepts
+  a `fmt` parameter and the Max drawdown row uses `higher_is_better=True`.
+
+---
+
 ## [0.11.1] - 2026-06-04
 
 ### Fixed

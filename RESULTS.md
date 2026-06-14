@@ -60,7 +60,8 @@ make run-frozen
 | Avg holding (days) | 24.1 |
 | Exposure | 73% |
 | Fisher combined p | 0.58 |
-| White RC p | N/A (no parameter grid) |
+| White RC p (vs cash) | N/A - Kalman has no candidate grid |
+| White RC p (vs B&H) | N/A - Kalman has no candidate grid |
 
 **Buy-and-hold comparison**
 
@@ -111,12 +112,18 @@ All three strategies fail to reject the null at p < 0.05 on every test applied.
 | Strategy | Fisher p | RC p (cash) | RC p (B&H) | IR | Beats B&H |
 |---|---|---|---|---|---|
 | MA crossover | 0.41 | 0.78 | 0.91 | −0.31 | 38% |
-| Kalman filter | 0.58 | N/A (no grid) | N/A (no grid) | −0.47 | 31% |
+| Kalman filter | 0.58 | - | - | −0.47 | 31% |
 | Momentum | 0.47 | 0.82 | 0.94 | −0.39 | 35% |
 
-The RC p (vs B&H) being higher than RC p (vs cash) is expected: the cash null is
-easier to reject than the B&H null when the market drifts upward. None of these
-strategies clear either bar.
+RC p is omitted for Kalman because it has no parameter grid: MLE calibrates (Q, R)
+jointly from the training window, leaving exactly one candidate per window. White's RC
+corrects for selection across a grid of candidates; with one candidate it reduces to
+the univariate bootstrap p-value, which Fisher's method already captures. The omission
+is deliberate, not a limitation of the tool.
+
+For MA and Momentum, RC p (vs B&H) is higher than RC p (vs cash), as expected - the
+B&H null is harder to reject than the cash null when the market drifts upward. None of
+these strategies clear either bar.
 
 At zero transaction cost and zero slippage, MA crossover and momentum approach
 significance (Fisher p ~0.08–0.12). The significance disappears as costs increase

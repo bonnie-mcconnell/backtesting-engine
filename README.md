@@ -197,11 +197,11 @@ Adding a new strategy means implementing this interface. The walk-forward runner
 
 **Block bootstrap with centred null.** Return series from trend-following have serial correlation that violates the iid assumption underlying parametric Sharpe tests. Block bootstrap preserves autocorrelation by resampling contiguous blocks. The critical implementation detail: returns are centred (mean subtracted) before resampling. Without centring, the bootstrap distribution inherits the strategy's observed drift, and p(boot_sharpe ≥ observed_sharpe) ≈ 0.5 for any positive-drift strategy regardless of signal quality. Centring anchors H₀ at zero mean explicitly.
 
-**White's Reality Check for grid search correction.** MA crossover has ~15 candidate (short, long) combinations. Picking the best performer without accounting for the search gives a biased result. RC bootstraps the full candidate return matrix simultaneously, preserving cross-candidate correlations, so the p-value accounts for the number of combinations tried.
+**White's Reality Check for grid search correction.** MA crossover evaluates ~112 candidate (short, long) combinations per training window. Picking the best performer without accounting for the search gives a biased result. RC bootstraps the full candidate return matrix simultaneously, preserving cross-candidate correlations, so the p-value accounts for the number of combinations tried.
 
 **Adjusted high/low, not just adjusted close.** The execution model fills at `close ± slippage_factor × (high - low)`. If close is dividend-adjusted but high/low are not, the close can sit outside the [low, high] band on ex-dividend dates, making the fill price nonsensical. All three price columns use the same adjustment factor.
 
-**No-trade windows as flat-cash, not excluded.** A window where the strategy makes no trades is a valid outcome - the strategy held cash. The old code excluded these windows from the aggregate Sharpe, which biased the summary upward by removing a real outcome from the record. No-trade windows now contribute Sharpe = 0 and p = 1.0.
+**No-trade windows as flat-cash, not excluded.** A window where the strategy makes no trades is a valid outcome - the strategy held cash. These windows contribute Sharpe = 0 and p = 1.0 to the summary rather than being excluded. Excluding them would bias the aggregate Sharpe upward by dropping a real outcome from the record.
 
 **Cost-inclusive position sizing.** `position_value = cash × fraction / (1 + cost_rate)` so that `position_value + buy_cost = cash × fraction` exactly. The intuitive formula (`position_value = cash × fraction`, then subtract cost) creates a small negative cash balance after every trade.
 
@@ -284,7 +284,7 @@ make test     # full suite
 make check    # lint + typecheck + tests
 ```
 
-470 tests across unit, integration, and CLI layers. Key correctness invariants covered:
+472 tests across unit, integration, and CLI layers. Key correctness invariants covered:
 
 - Execution model: slippage, signal delay, backward compat
 - Position sizing: no negative cash after any trade sequence
@@ -322,6 +322,7 @@ Full discussion in [docs/methodology.md](docs/methodology.md).
 
 - White, H. (2000). A Reality Check for Data Snooping. *Econometrica*, 68(5), 1097–1126.
 - Grinold, R. & Kahn, R. (2000). *Active Portfolio Management*, 2nd ed. Chapter 2.
+- Kunsch, H.R. (1989). The Jackknife and the Bootstrap for General Stationary Observations. *Annals of Statistics*, 17(3), 1217–1241.
 - Politis, D.N. & Romano, J.P. (1994). The Stationary Bootstrap. *JASA*, 89(428), 1303–1313.
 - Moskowitz, T.J., Ooi, Y.H. & Pedersen, L.H. (2012). Time Series Momentum. *Journal of Financial Economics*, 104(2), 228–250.
 - Harvey, A.C. (1989). *Forecasting, Structural Time Series Models and the Kalman Filter*. Cambridge University Press.

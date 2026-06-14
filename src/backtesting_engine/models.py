@@ -37,11 +37,17 @@ class MetricsResult:
     """
     Performance metrics computed from a portfolio value series.
 
-    All ratio metrics are annualised (252 trading days). p_value is the
-    per-window block-bootstrap Sharpe p-value. combined_p_value,
-    reality_check_p_value, and reality_check_bh_p_value are populated on
-    BacktestResult.summary_metrics after the full walk-forward completes;
-    they're NaN on individual windows.
+    All ratio metrics are annualised (252 trading days).
+
+    p_value: per-window block-bootstrap Sharpe p-value when on an individual
+    WindowResult. On BacktestResult.summary_metrics it stores the mean of
+    per-window p-values, labelled "Block-bootstrap p (mean)" in CLI output.
+    This is informational but not a valid combining test - use combined_p_value
+    (Fisher) for formal inference.
+
+    combined_p_value, reality_check_p_value, and reality_check_bh_p_value
+    are only populated on BacktestResult.summary_metrics after the full
+    walk-forward completes; they are NaN on individual windows.
 
     Trade diagnostics (exposure_fraction through avg_holding_days) are NaN
     when trades were not provided to calculate_metrics().

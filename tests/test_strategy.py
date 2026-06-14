@@ -205,11 +205,13 @@ class TestCandidateTestReturns:
 
 class TestPositionCarryOver:
     """
-    Verify that generate_signals_with_context injects a buy signal at test bar 0
+    generate_signals_with_context must inject a buy signal at test bar 0
     when the strategy is already long at the context/test boundary.
 
-    Without this fix, walk-forward systematically understates returns by starting
-    each test window flat even when the strategy should carry a long position.
+    Without this, walk-forward understates returns by starting each test
+    window flat even when the strategy should carry a long position over
+    from the prior period. The injected signal must match the actual MA
+    relationship at the boundary, not be hardcoded.
     """
 
     def test_ma_carries_long_position_into_uptrend_test(self) -> None:

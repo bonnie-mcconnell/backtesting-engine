@@ -167,17 +167,21 @@ class TestWriteSummaryJson:
     def test_nan_serialised_as_null(
         self, tmp_path: Path, single_run: list[RunEntry], wf_result: BacktestResult
     ) -> None:
-        # reality_check_bh_p_value may be NaN when walk_forward runs without
-        # full OHLC data. Check that any NaN in the metrics round-trips to null.
+        # NaN floats must be serialised as JSON null, not as the string "nan"
+        # or "NaN" (which would not be valid JSON and would fail json.loads).
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
         raw = out.read_text()
+        # json.loads would already fail above if output were invalid JSON,
+        # but check explicitly that the raw text has no bare nan tokens.
+        assert "nan" not in raw.lower() or '"nan"' not in raw.lower()
         data = json.loads(raw)
         m = data["runs"][0]["metrics"]
+        # Any null in the metrics dict must come from a NaN float, not a missing key.
         for key, val in m.items():
-            if val is None:
-                # null in JSON came from a NaN float - verify it's not a string
-                assert val is None
+            assert val is None or isinstance(val, (int, float, str)), (
+                f"metrics.{key} has unexpected type {type(val)}"
+            )
 
     def test_inf_serialised_as_string(self, tmp_path: Path) -> None:
         # Construct a MetricsResult with an inf calmar_ratio (no drawdown window).

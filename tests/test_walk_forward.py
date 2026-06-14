@@ -392,12 +392,7 @@ class TestWalkForwardInputValidation:
             pytest.fail(f"Valid years raised ValueError: {e}")
 
 
-# ---------------------------------------------------------------------------
-
-# WindowResult deprecation, _extract_active_params removal
-
-
-# ---------------------------------------------------------------------------
+# ── WindowResult deprecation, _extract_active_params removal ─────────────────
 
 class TestWindowResultDeprecationWarning:
     """WindowResult.skipped=True must fire a DeprecationWarning."""
@@ -451,10 +446,11 @@ class TestWindowResultDeprecationWarning:
         assert not issubclass(w[0].category, RuntimeWarning)
 
 class TestExtractActiveParamsRemoved:
-    """_extract_active_params was a dead one-liner wrapper that has been removed.
+    """The walk_forward module must not contain _extract_active_params.
 
-    Verifies it is gone and the orchestrator calls strategy.active_params() directly.
-    Prevents it from being accidentally re-added.
+    The orchestrator calls strategy.active_params() directly. A private
+    wrapper that just delegates to it adds indirection with no benefit
+    and becomes a maintenance surface if active_params() signature changes.
     """
 
     def test_extract_active_params_not_in_walk_forward_module(self) -> None:
@@ -463,6 +459,6 @@ class TestExtractActiveParamsRemoved:
         import backtesting_engine.walk_forward as wf
         members = [name for name, _ in inspect.getmembers(wf)]
         assert "_extract_active_params" not in members, (
-            "_extract_active_params was a dead one-liner wrapper that should not exist. "
-            "The orchestrator calls strategy.active_params() directly."
+            "_extract_active_params must not exist in walk_forward - "
+            "the orchestrator calls strategy.active_params() directly."
         )

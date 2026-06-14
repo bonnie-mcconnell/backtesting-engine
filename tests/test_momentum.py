@@ -282,25 +282,23 @@ class TestMomentumActiveParams:
         assert params["lookback"] in _LOOKBACK_GRID
 
 
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
+# ── MOMENTUM_LOOKBACKS config contract ───────────────────────────────────────
 
 class TestMomentumLookbackConfig:
     """MOMENTUM_LOOKBACKS in config.py must drive the momentum strategy grid.
 
-    The _LOOKBACK_GRID alias was removed in favour of referencing MOMENTUM_LOOKBACKS
-    directly from fit(). Checks the canonical grid is used correctly.
+    fit() must evaluate exactly the candidates in MOMENTUM_LOOKBACKS (filtered
+    by data length). Any divergence means the strategy and config are out of
+    sync and the RC p-value is computed over a different set than documented.
     """
 
     def test_config_lookbacks_match_strategy_grid(self) -> None:
-        """fit() must evaluate exactly MOMENTUM_LOOKBACKS candidates.
+        """fit() must evaluate exactly the candidates in MOMENTUM_LOOKBACKS.
 
-        Previously _LOOKBACK_GRID was a module-level alias that could silently
-        diverge from config. Now momentum.py imports and uses MOMENTUM_LOOKBACKS
-        directly, so this test verifies that after fit(), _all_lookbacks_ contains
-        exactly the candidates from MOMENTUM_LOOKBACKS (filtered by data length).
+        momentum.py imports and uses MOMENTUM_LOOKBACKS directly from config,
+        so after fit(), _all_lookbacks_ must equal the config list (filtered
+        by data length). Any divergence means the strategy and config are out
+        of sync and the RC p-value is computed over a different set than documented.
         """
         import numpy as np
         import pandas as pd
@@ -338,16 +336,3 @@ class TestMomentumLookbackConfig:
         config = importlib.import_module("backtesting_engine.config")
         assert hasattr(config, "MOMENTUM_LOOKBACKS")
         assert isinstance(config.MOMENTUM_LOOKBACKS, list)
-
-    def test_strategy_uses_config_lookbacks_after_fit(self) -> None:
-        """After fit(), _all_lookbacks_ must equal MOMENTUM_LOOKBACKS."""
-        import pandas as pd
-
-        from backtesting_engine.config import MOMENTUM_LOOKBACKS
-        from backtesting_engine.strategy.momentum import MomentumStrategy
-        dates = pd.date_range("2020-01-01", periods=300, freq="B")
-        close = pd.Series([100 + i for i in range(300)], index=dates, dtype=float)
-        data = pd.DataFrame({"close": close})
-        strategy = MomentumStrategy()
-        strategy.fit(data)
-        assert strategy._all_lookbacks_ == MOMENTUM_LOOKBACKS

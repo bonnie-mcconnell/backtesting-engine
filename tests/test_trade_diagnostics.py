@@ -1,8 +1,7 @@
 """
 Tests for trade-level diagnostic metrics: exposure fraction, win rate,
-avg win/loss ratio, and avg holding period.
+avg win/loss ratio, and average holding period.
 
-These cover: exposure fraction, win rate, avg win/loss ratio, avg holding period.
 Each test uses synthetic data where the expected value can be derived by hand,
 so the tests are independent of the strategy and exercise the metric code directly.
 """

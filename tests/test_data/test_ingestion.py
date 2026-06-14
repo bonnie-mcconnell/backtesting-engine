@@ -161,26 +161,13 @@ def test_load_data_output_passes_validation() -> None:
 
 def _fake_download_with_exdiv(ticker: str = "SPY") -> pd.DataFrame:
     """
-    Fake yfinance response simulating an ex-dividend date where the adjusted
-    close sits below the adjusted low - requiring a clip.
+    Fake yfinance response where an ex-dividend date causes the adjusted
+    close to sit below the adjusted low, requiring a clip.
 
-    On ex-dividend dates, yfinance reduces Adj Close by the dividend amount.
-    The adjusted high/low are also scaled by (Adj Close / Close). When the
-    dividend is large relative to the intraday range, the scaled close can
-    sit slightly outside the scaled [low, high] band.
-
-    Here: Close=101.0, Adj Close=100.3 (adjustment ≈ 0.9931).
-    Adjusted low = 100.8 * 0.9931 ≈ 100.23, but adj_close = 100.3 > 100.23,
-    so no clip... We use a different scenario: Adj Close < raw Low, which
-    happens when Close (unadjusted) falls below the raw Low due to yfinance
-    data revisions. We use raw Low > Adj Close directly:
-    adj_close=100.3, raw_low=100.8, adj_factor=100.3/101.0≈0.9931,
-    adj_low=100.8*0.9931≈100.1. adj_close(100.3) > adj_low(100.1): no clip.
-
-    Correct design: make adj_close sit below adj_low by having a very small
-    (Adj Close / Close) ratio combined with a high raw Low:
-    Adj Close=99.0, Close=101.0 (factor=0.9802), Low=101.5 → adj_low=99.50.
-    adj_close(99.0) < adj_low(99.50): clip fires, sets close=99.50. ✓
+    Bar 2: Adj Close=99.0, Close=101.0 → adjustment≈0.9802.
+    Raw Low=101.5 → adj_low = 101.5 × 0.9802 ≈ 99.50.
+    adj_close(99.0) < adj_low(99.50): _reconcile_adjusted_close clips
+    close up to adj_low.
     """
     dates = pd.date_range("2020-01-01", periods=5, freq="B")
     #        Adj Close  Close    High    Low     Volume
@@ -222,22 +209,11 @@ def test_load_data_clipped_close_within_band() -> None:
 
 def _fake_download_bad_data(ticker: str = "SPY") -> pd.DataFrame:
     """
-    Fake response where bar 1's adjusted close sits ~20% below the adjusted low -
-    far above the 0.5% ex-dividend tolerance. Should raise ValueError.
+    Fake response where bar 1's adjusted close sits ~25% below the adjusted
+    low - far above the 0.5% ex-dividend tolerance. Should raise ValueError.
 
-    Adj Close=80.0, Close=100.0 → adjustment=0.80.
-    Raw Low=100.0 → adj_low=80.0. adj_close=80.0 == adj_low → no violation?
-
-    We need adj_close < adj_low. Use: Adj Close=79.0, Close=100.0, raw Low=100.0.
-    adj_low = 100.0 * 0.79 = 79.0 = adj_close → still no gap.
-
-    Correct approach: Adj Close=78.0, Close=100.0, raw Low=100.0.
-    adj_low = 100.0 * 0.78 = 78.0. adj_close=78.0 == adj_low → still 0 gap.
-
-    The clip only fires when adj_close < adj_low, i.e., Adj Close < raw_Low * (Adj Close/Close).
-    That simplifies to: Close < raw_Low. So we need unadjusted close below raw low.
-    Adj Close=78.0, Close=80.0 (factor=0.975), raw Low=100.0 → adj_low=97.5.
-    adj_close=78.0 < adj_low=97.5. Gap = 97.5 - 78.0 = 19.5, fraction = 19.5/78.0 = 25%. ✓
+    Bar 1: Adj Close=78.0, Close=80.0 → adjustment=0.975.
+    Raw Low=100.0 → adj_low=97.5. Gap=19.5, fraction=19.5/78.0=25%. ✓
     """
     dates = pd.date_range("2020-01-01", periods=3, freq="B")
     #        Adj Close  Close   High    Low   Volume
@@ -257,10 +233,11 @@ def test_load_data_raises_on_large_close_band_violation() -> None:
 
 
 def _fake_download_no_close_column(ticker: str = "SPY") -> pd.DataFrame:
-    """Fake yfinance response missing the 'Close' (unadjusted) column.
+    """Fake yfinance response missing the unadjusted 'Close' column.
 
-    Previously this silently produced unadjusted high/low values; now it
-    must raise ValueError because adjustment factor cannot be computed.
+    'Close' is required to compute the adjustment factor (Adj Close / Close).
+    Without it, adjusted high/low cannot be built and the ingestion must
+    raise ValueError rather than return incorrect unadjusted values.
     """
     dates = pd.date_range("2020-01-01", periods=3, freq="B")
     columns = pd.MultiIndex.from_tuples([

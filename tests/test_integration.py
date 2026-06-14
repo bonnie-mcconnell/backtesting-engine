@@ -78,12 +78,9 @@ def _zero_friction() -> ExecutionConfig:
 
 @pytest.fixture(scope="class")
 def ma_pipeline():
-    """
-    Full MA pipeline result shared across all TestFullPipelineMA tests.
+    """Full MA pipeline result shared across all TestFullPipelineMA tests.
 
-    scope="class" means walk_forward runs once for the class, not once per test.
-    Previously setup_method() re-ran the full MA grid search for every test
-    method - 9 redundant calls for the same data.
+    scope="class": walk_forward runs once for the class, not once per test method.
     """
     data = _make_trending_data()
     exec_cfg = _zero_friction()
@@ -132,11 +129,9 @@ def momentum_pipeline():
 
 @pytest.fixture(scope="class")
 def cross_component_pipeline():
-    """
-    Shared MA pipeline for TestCrossComponentConsistency.
+    """Shared MA pipeline for TestCrossComponentConsistency.
 
-    Previously _run() was called independently for each of the 6 tests in
-    the class, each running the full MA grid search. Now it runs once.
+    scope="class": walk_forward runs once for the class, not once per test method.
     """
     data = _make_trending_data(seed=10)
     exec_cfg = _zero_friction()
@@ -370,7 +365,6 @@ class TestCrossComponentConsistency:
     """Verify outputs from one component are consistent with inputs to another.
 
     All tests share a single walk_forward result via cross_component_pipeline.
-    Previously _run() was called independently for each test - 6 redundant calls.
     """
 
     def test_benchmark_window_count_matches_result(
@@ -526,9 +520,9 @@ class TestPipelineEdgeCases:
     def test_rc_p_and_fisher_p_cover_same_windows(self) -> None:
         """RC p must be computable even when some windows are flat-cash.
 
-        Before the RC flat-cash parity fix, flat-cash windows contributed to
-        Fisher (p=1.0) but were excluded from the RC candidate matrix, causing
-        the two statistics to test different hypotheses over different windows.
+        Flat-cash windows contribute p=1.0 to Fisher but must also contribute
+        zero-return arrays to the RC candidate matrix. Without this parity,
+        the two statistics test different window sets and are non-comparable.
         """
         n = 1260
         dates = pd.date_range("2015-01-01", periods=n, freq="B")

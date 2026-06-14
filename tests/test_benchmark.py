@@ -164,14 +164,10 @@ def _make_mixed_window_data_for_flat_cash() -> pd.DataFrame:
 
 @pytest.fixture(scope="class")
 def flat_cash_result():
-    """
-    Single walk_forward result shared across all TestRCFlatCashParity tests.
+    """Single walk_forward result shared across all TestRCFlatCashParity tests.
 
-    scope="class" means this fixture is computed once when the first test in
-    the class runs, then reused for all subsequent tests in the class.
-    Without sharing, _run_walk_forward_with_flat_cash() was called 3× in
-    separate method calls, each running the full MA grid search + bootstrap.
-    With a class-scoped fixture, the expensive computation runs exactly once.
+    scope="class": the expensive MA grid search + bootstrap runs exactly once
+    for the class, not once per test method.
     """
     from backtesting_engine.execution import ExecutionConfig
     from backtesting_engine.strategy.moving_average import MovingAverageStrategy
@@ -211,10 +207,10 @@ class TestRCFlatCashParity:
     def test_rc_p_is_not_nan_when_strategy_has_candidates(self, flat_cash_result) -> None:
         """RC p must be computable even when some windows are flat-cash.
 
-        Before the fix: flat-cash windows skipped RC candidate collection but
-        contributed p=1.0 to Fisher -> inconsistent hypotheses, RC often NaN.
-        After the fix: flat-cash windows contribute zero-return arrays to the
-        RC matrix so both statistics test the same set of windows.
+        Flat-cash windows must contribute zero-return arrays to the RC candidate
+        matrix. Without this, the RC and Fisher tests operate on different window
+        sets - Fisher receives p=1.0 from flat-cash windows but RC silently
+        excludes them, making the two statistics non-comparable.
         """
         rc_p = flat_cash_result.summary_metrics.reality_check_p_value
         assert not math.isnan(rc_p), (
@@ -245,8 +241,6 @@ class TestRCFlatCashParity:
         assert not math.isnan(result.summary_metrics.combined_p_value)
         rc_p = result.summary_metrics.reality_check_p_value
         if not math.isnan(rc_p):
-            # RC p ≥ Fisher p is the theoretical lower bound of the data-snooping correction.
-            # Not a hard guarantee in finite samples, but RC p < 0.0 or > 1.0 would be wrong.
             assert 0.0 <= rc_p <= 1.0
 
 
@@ -281,9 +275,11 @@ def slippage_parity_data():
 
 
 class TestBenchmarkSlippageParity:
-    """
-    The benchmark must apply the same slippage as the strategy.
-    Previously _buy_and_hold_returns only applied transaction costs.
+    """The benchmark must apply the same slippage as the strategy.
+
+    Without slippage parity, a cost-sensitivity sweep produces different
+    effective friction for the strategy and the benchmark, making the
+    comparison non-apples-to-apples at non-zero slippage settings.
     """
 
     def test_slippage_reduces_benchmark_return(self) -> None:

@@ -149,10 +149,7 @@ class TestBackwardCompatibility:
         assert (result.portfolio_values > 0).all()
 
 
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
+# ── Execution docstring currency ──────────────────────────────────────────────
 
 class TestExecutionDocstring:
     """The execution docstring must describe current realistic defaults, not old zero-slippage."""
@@ -169,18 +166,18 @@ class TestExecutionDocstring:
         )
 
 
-# ---------------------------------------------------------------------------
-# Source file encoding (Windows portability)
-
-
-
+# ── Cost sweep signal delay threading ─────────────────────────────────────────
 
 class TestCostSweepSignalDelay:
     """
     cost_sensitivity_sweep must honour the signal_delay parameter.
 
-    Before the fix, _sweep_worker hardcoded signal_delay=1, so a sweep
-    run with delay=0 silently used delay=1 for every cell.
+    The sweep runs each (cost, slippage) cell in a worker process via
+    _sweep_worker. If signal_delay is not threaded through to the worker,
+    sweep results will silently use a different delay than the caller
+    specified - meaning a sweep at delay=0 would actually use delay=1
+    (or vice versa), making the heatmap non-comparable to a direct
+    walk_forward() call with the same parameters.
     """
 
     def test_delay_zero_sharpe_differs_from_delay_one(self) -> None:
@@ -218,8 +215,9 @@ class TestCostSweepSignalDelay:
         Fisher p from cost_sensitivity_sweep(signal_delay=0) must match a direct
         walk_forward(signal_delay=0) call on the same data and seed.
 
-        If _sweep_worker hardcoded delay=1, the sweep p-value would match the
-        delay=1 run, not the delay=0 run.
+        If signal_delay is not reaching _sweep_worker, sweep results will use
+        a different delay than specified - making the heatmap non-comparable
+        to direct walk_forward calls with the same parameters.
         """
         import math
 

@@ -198,7 +198,10 @@ def _print_ticker_summary(
     rc_str = f"{rc:.4f}" if not math.isnan(rc) else "N/A"
     rc_bh = m.reality_check_bh_p_value
     rc_bh_str = f"{rc_bh:.4f}" if not math.isnan(rc_bh) else "N/A"
-    print(f"  RC p (cash): {rc_str}  RC p (B&H): {rc_bh_str}  Max DD: {m.max_drawdown:.1%}  BH DD: {benchmark.benchmark_max_drawdown:.1%}")
+    print(
+        f"  RC p (cash): {rc_str}  RC p (B&H): {rc_bh_str}"
+        f"  Max DD: {m.max_drawdown:.1%}  BH DD: {benchmark.benchmark_max_drawdown:.1%}"
+    )
 
 
 def _print_comparison_table(

@@ -306,6 +306,11 @@ def _drawdown(equity: pd.Series) -> pd.Series:
 
 
 def _stitch_returns(valid_windows: list[WindowResult]) -> np.ndarray:
+    # Concatenates test-period portfolio returns across windows in order.
+    # Note: adjacent windows are not temporally adjacent in calendar time -
+    # there is a training-period gap between them. Rolling metrics computed
+    # over the stitched series will span these gaps at window boundaries,
+    # which is a display artifact only and does not affect reported p-values.
     arrays = []
     for w in valid_windows:
         pv = w.simulation_result.portfolio_values

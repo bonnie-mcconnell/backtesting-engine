@@ -247,6 +247,10 @@ def _trade_diagnostics(
     pnls = np.array([t.pnl for t in trades], dtype=float)
     wins = pnls[pnls > 0]
     losses = pnls[pnls < 0]
+    # win_rate = winning trades / all trades. Breakeven trades (pnl == 0)
+    # count in the denominator but not in wins or losses - they reduce
+    # win_rate without showing up in avg_win_loss_ratio. In practice this
+    # is rare since exact breakeven requires post-cost pnl = 0 precisely.
     win_rate = float(len(wins) / trade_count) if trade_count > 0 else nan
 
     if len(wins) > 0 and len(losses) > 0:

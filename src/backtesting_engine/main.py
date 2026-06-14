@@ -495,7 +495,7 @@ def _verdict(fisher_p: float, rc_p: float, rc_bh_p: float = float("nan")) -> Non
     else:
         print(
             f"  ✗  NOT SIGNIFICANT: Fisher p={fisher_p:.4f} ≥ {SIGNIFICANCE_THRESHOLD}.\n"
-            f"     Performance consistent with noise across {SIGNIFICANCE_THRESHOLD:.0%} threshold."
+            f"     No evidence of edge at the {SIGNIFICANCE_THRESHOLD:.0%} threshold."
         )
 
 

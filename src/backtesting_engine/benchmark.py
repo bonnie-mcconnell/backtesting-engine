@@ -108,6 +108,12 @@ def compute_benchmark(
     sharpe_diffs = strat_sharpe_arr - bm_sharpe_arr
 
     if all_active_returns:
+        # Concatenate daily active returns across all test windows and compute
+        # IR from the pooled series. This gives more data points than averaging
+        # per-window annualised IRs (which are noisy on 252-bar windows) and
+        # converges to the same value in expectation. The cross-window boundary
+        # is a discontinuity in portfolio state but not in the statistical
+        # properties of the active returns, so pooling is valid here.
         active_concat = np.concatenate(all_active_returns)
         active_std = float(np.std(active_concat, ddof=1))
         if active_std < 1e-10:

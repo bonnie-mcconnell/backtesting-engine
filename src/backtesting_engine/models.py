@@ -2,7 +2,7 @@
 Typed data contracts between pipeline components.
 
 Trade, MetricsResult, and WindowResult are frozen=True (immutable after creation).
-SimulationResult and BacktestResult are not frozen - they hold mutable pd.Series
+SimulationResult and BacktestResult are not frozen; they hold mutable pd.Series
 and lists that can't be hashed. Treat both as read-only after construction.
 """
 
@@ -21,7 +21,7 @@ class Trade:
     exit_price: float
     shares: float
     transaction_costs: float  # total round-trip cost in dollars
-    pnl: float                # net P&L after all transaction costs
+    pnl: float  # net P&L after all transaction costs
 
 
 @dataclass
@@ -54,7 +54,7 @@ class MetricsResult:
     """
     sharpe_ratio: float
     sortino_ratio: float
-    max_drawdown: float           # fraction, e.g. -0.15 = -15%
+    max_drawdown: float  # fraction, e.g. -0.15 = -15%
     calmar_ratio: float
     omega_ratio: float
     p_value: float
@@ -71,7 +71,7 @@ class MetricsResult:
     trade_count: int = 0
     win_rate: float = float("nan")
     avg_win_loss_ratio: float = float("nan")
-    avg_holding_days: float = float("nan")
+    avg_holding_days: float = float("nan")  # calendar days, not trading days
 
 
 @dataclass(frozen=True)
@@ -83,8 +83,7 @@ class WindowResult:
     test_end: pd.Timestamp
     simulation_result: SimulationResult
     metrics_result: MetricsResult
-    skipped: bool = False
-    # always False in current code; kept for API compat (see __post_init__)
+    skipped: bool = False  # always False in current code; kept for API compat
     active_params: dict[str, object] = field(default_factory=dict)
     # calibrated params for this window, e.g. {'short_window': 50, 'long_window': 200}
     formatted_params: str = ""
@@ -113,8 +112,7 @@ class BacktestResult:
     strategy_name: str
     window_results: list[WindowResult]
     summary_metrics: MetricsResult
-    flat_cash_window_count: int = 0
-    # windows where the strategy held cash the entire period - valid results, not errors
+    flat_cash_window_count: int = 0  # windows where strategy held cash all period
 
     @property
     def valid_windows(self) -> list[WindowResult]:

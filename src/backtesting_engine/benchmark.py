@@ -35,12 +35,12 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class BenchmarkResult:
     """Buy-and-hold benchmark metrics computed over the same walk-forward windows."""
-    benchmark_sharpe: float          # mean per-window Sharpe for buy-and-hold
-    benchmark_sortino: float         # mean per-window Sortino for buy-and-hold
-    benchmark_max_drawdown: float    # worst per-window drawdown (not averaged)
-    information_ratio: float         # annualised active return / active return vol; IR > 0 = positive alpha
-    sharpe_diff_t_stat: float        # paired t-stat for per-window Sharpe differences
-    sharpe_diff_p_value: float       # two-sided p-value for the Sharpe difference t-test
+    benchmark_sharpe: float  # mean per-window Sharpe for buy-and-hold
+    benchmark_sortino: float  # mean per-window Sortino for buy-and-hold
+    benchmark_max_drawdown: float  # worst per-window drawdown (not averaged)
+    information_ratio: float  # annualised active return / active return vol; IR > 0 = positive alpha
+    sharpe_diff_t_stat: float  # paired t-stat for per-window Sharpe differences
+    sharpe_diff_p_value: float  # two-sided p-value for the Sharpe difference t-test
     strategy_beats_benchmark_fraction: float  # fraction of windows where strategy Sharpe > B&H
     per_window_benchmark_sharpes: list[float] = dataclasses.field(default_factory=list)
     # per-window B&H Sharpe in order - used by dashboard to colour bars against the
@@ -187,6 +187,11 @@ def _buy_and_hold_returns(
     returns[0] -= cost_rate + entry_slip
 
     # Exit cost + slippage drag on last day.
+    # When len(close) == 2, returns has length 1, so returns[0] and returns[-1]
+    # are the same element: the single return absorbs both entry and exit costs.
+    # This is correct economics for a one-bar holding period (buy at open,
+    # sell at close of same bar would be zero-length; buy at close[0], sell at
+    # close[1] with both frictions applied is the right model here).
     exit_range = high[-1] - low[-1]
     exit_slip = slippage_factor * exit_range / max(close[-1], 1e-10)
     returns[-1] -= cost_rate + exit_slip

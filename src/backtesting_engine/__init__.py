@@ -1,50 +1,17 @@
 """
 backtesting-engine - Walk-forward validated backtesting with statistical rigour.
 
-Run all three strategies with one call:
-
-    from backtesting_engine import walk_forward, MovingAverageStrategy
-    from backtesting_engine import ExecutionConfig, build_dashboard, load_data, validate_data
+    from backtesting_engine import load_data, validate_data, walk_forward, MovingAverageStrategy
+    from backtesting_engine.config import ANNUALISATION_FACTOR
 
     data = load_data("SPY", "1993-01-01", end_date="2024-12-31")
-    validate_data(data, min_rows=1260)
-
-    # Default ExecutionConfig: 0.1% cost, 5% slippage, 1-day signal delay.
-    # This matches the CLI defaults and the README examples - conservative
-    # retail execution out of the box.
+    validate_data(data, min_rows=4 * ANNUALISATION_FACTOR)  # (3+1)*252 for one window
     result = walk_forward(data, MovingAverageStrategy())
 
-    # Override execution parameters explicitly when needed:
-    result_low_cost = walk_forward(
-        data,
-        MovingAverageStrategy(),
-        execution=ExecutionConfig(transaction_cost_rate=0.0001, slippage_factor=0.01),
-    )
-
-    from pathlib import Path
-    build_dashboard(result, output_path=Path("dashboard.html"))
-
-Zero-friction (strategy logic verification, no execution model):
-
-    from backtesting_engine import ExecutionConfig, walk_forward
-    result = walk_forward(
-        data, strategy,
-        execution=ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0),
-    )
-
-For cost sensitivity analysis:
-
-    from backtesting_engine import cost_sensitivity_sweep
-    sweep = cost_sensitivity_sweep(
-        data, MovingAverageStrategy(),
-        cost_rates=[0.0001, 0.001, 0.005],
-        slippage_factors=[0.0, 0.05, 0.10],
-    )
-
-Reproducible frozen runs (same output every time):
-
-    from backtesting_engine.config import BLOCK_BOOTSTRAP_SEED
-    result = walk_forward(data, MovingAverageStrategy(), bootstrap_seed=BLOCK_BOOTSTRAP_SEED)
+ExecutionConfig defaults (0.1% cost, 5% slippage, 1-day delay) match the CLI.
+See the README's "Library usage" section for cost sensitivity sweeps, zero-friction
+runs, reproducible seeded runs, and cross-asset validation - this docstring stays
+short on purpose so it doesn't drift out of sync with the README's longer version.
 """
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark

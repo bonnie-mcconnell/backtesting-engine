@@ -220,9 +220,10 @@ class _SummaryEncoder(json.JSONEncoder):
     """
     JSON encoder that handles float edge cases correctly.
 
-    Python's default json module serialises float("inf") as the bare word
-    Infinity, which is invalid JSON. NaN becomes NaN, also invalid. Both
-    are intercepted here and converted to valid JSON values.
+    Python's default json module writes bare Infinity and NaN literals for
+    float("inf") and float("nan"), which are not valid JSON (RFC 8259 does
+    not include these tokens). Both are intercepted here and converted to
+    valid JSON values before encoding.
 
     NaN → null (null is the JSON convention for "no data")
     Inf → "Infinity" / "-Infinity" (string, not null, to preserve the
@@ -254,7 +255,7 @@ def _csv_value(v: Any) -> str:
     """Convert a value to its CSV string representation."""
     if isinstance(v, float):
         if math.isnan(v):
-            return ""          # empty cell = missing, consistent with pandas read_csv default
+            return ""  # empty cell = missing, consistent with pandas read_csv default
         if math.isinf(v):
             return "Infinity" if v > 0 else "-Infinity"
         return str(v)

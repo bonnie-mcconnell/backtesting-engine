@@ -6,7 +6,7 @@ runs execution-realistic simulation on each test period, and aggregates results
 with Fisher combined p and White's Reality Check.
 
 The RC candidate matrix uses TEST-period returns for every grid candidate,
-not training returns. Storing training returns would be circular - the winner
+not training returns. Storing training returns would be circular: the winner
 was selected by training Sharpe, so of course it looks best in-sample.
 """
 
@@ -84,16 +84,16 @@ def walk_forward(
 
     while window_start + train_days + test_days <= len(data):
         train_end = window_start + train_days
-        test_end  = window_start + train_days + test_days
+        test_end = window_start + train_days + test_days
 
         train_data = data.iloc[window_start:train_end]
-        test_data  = data.iloc[train_end:test_end]
+        test_data = data.iloc[train_end:test_end]
 
         strategy.fit(train_data)
 
-        active_params    = strategy.active_params()
+        active_params = strategy.active_params()
         formatted_params = strategy.format_params()
-        param_evo_spec   = strategy.param_evolution_spec()
+        param_evo_spec = strategy.param_evolution_spec()
 
         context_data = _get_context(strategy, train_data)
         signals = strategy.generate_signals_with_context(context_data, test_data)
@@ -220,7 +220,7 @@ def _build_summary_metrics(
     - reality_check_p_value: does the best strategy beat cash?
     - reality_check_bh_p_value: does the best strategy beat buy-and-hold?
 
-    A few aggregation choices worth noting:
+    A few aggregation choices differ from simple per-window means:
     - max_drawdown: worst (minimum) across windows, not mean. The worst-case
       drawdown is what a live trader experienced; the average obscures that.
     - calmar_ratio: computed from the stitched return series across all windows.
@@ -233,7 +233,7 @@ def _build_summary_metrics(
         vals = [getattr(w.metrics_result, attr) for w in valid_windows]
         finite_vals = [v for v in vals if not (math.isnan(v) or abs(v) == float("inf"))]
         if not finite_vals:
-            return float("inf")
+            return float("nan")
         return float(np.mean(finite_vals))
 
     worst_max_dd = float(min(
@@ -314,8 +314,16 @@ def _stitch_benchmark_returns(
     segments: list[np.ndarray] = []
     for window in valid_windows:
         window_data = data.loc[window.test_start:window.test_end]
-        bh = _buy_and_hold_returns(window_data, cost_rate=cost_rate, slippage_factor=slippage)
-        segments.append(bh)
+        if not window.simulation_result.trades:
+            # Flat-cash window: candidate matrix has zeros for this window,
+            # so active return must also be zero (0 - 0 = 0).  Using real
+            # B&H returns here would produce -bh_return instead of 0,
+            # unfairly penalising a window where the strategy held no position.
+            n_bars = len(window_data) - 1
+            segments.append(np.zeros(max(n_bars, 0), dtype=float))
+        else:
+            bh = _buy_and_hold_returns(window_data, cost_rate=cost_rate, slippage_factor=slippage)
+            segments.append(bh)
 
     if not segments:
         return np.array([], dtype=float)
@@ -329,6 +337,23 @@ def _calmar_from_stitched(valid_windows: list[WindowResult]) -> float:
 
     Necessary because max drawdown can span window boundaries. Per-window
     averaging misses that.
+
+    Window boundary note: portfolio_values already has the execution model
+    applied, so pct_change() gives portfolio returns, not raw close returns.
+    pct_change().dropna() drops bar 0 of EVERY window (there is no "bar -1"
+    within that window's own series to compare against), so no value ever
+    compares window N's last bar to window N+1's first bar - the windows
+    are stitched as independent return arrays, not as a continuous price
+    series. No price-level stitching is needed.
+
+    This means that on the rare window where a carry-over position opens
+    exactly at bar 0 (see moving_average.py / kalman_filter.py boundary
+    logic), that single bar's entry cost and slippage are excluded from
+    this calculation, identically to how calculate_metrics() excludes it
+    from that window's own Sharpe/Sortino/p-value. The effect is a single
+    dropped data point out of ~252 per window - negligible for any
+    aggregate statistic - but worth knowing if you're reconciling Calmar
+    against a hand-computed return series bar-for-bar.
     """
     all_returns: list[np.ndarray] = []
     for w in valid_windows:
@@ -349,8 +374,14 @@ def _fisher_combined_p(p_values: list[float]) -> float:
     """
     Fisher's combined probability test: -2 Σ ln(pᵢ) ~ χ²(2k).
 
-    Windows are not strictly independent (rolling data overlap) so this is
-    approximate. Treat the result as directional, not a precise threshold.
+    Windows are not strictly independent: adjacent walk-forward windows share
+    two years of regime exposure under a 3yr/1yr split, so the effective number
+    of independent windows is considerably smaller than the nominal count. For
+    SPY 1993–2024 with ~28 nominal windows, a conservative estimate puts the
+    effective count around 8–12. This inflates the degrees of freedom (2k) and
+    makes Fisher more liberal than a test on truly independent windows would be.
+    Treat the result as directional evidence rather than a calibrated p-value.
+    The output labels this explicitly: "(approx: windows not fully independent)".
     """
     clipped = np.clip(p_values, 1e-300, 1.0 - 1e-10)
     chi2_stat = -2.0 * np.sum(np.log(clipped))
@@ -362,15 +393,20 @@ def _flat_cash_metrics() -> MetricsResult:
     Metrics for a window where the strategy held cash (no trades executed).
 
     sharpe/sortino = 0.0 (not NaN or inf) so flat-cash windows are included
-    in summary means rather than silently dropped. omega = 1.0 for the same
-    reason. p_value = 1.0, maximally consistent with the null.
+    in summary means rather than silently dropped. p_value = 1.0, maximally
+    consistent with the null.
+
+    omega_ratio is NaN because a zero-return series has no gains or losses to
+    ratio (the limit is undefined, not 1.0). NaN is excluded by mean_metric,
+    which is correct: flat-cash windows add no information about omega. Using
+    1.0 would fabricate a value and pull the mean omega downward.
     """
     return MetricsResult(
         sharpe_ratio=0.0,
         sortino_ratio=0.0,
         max_drawdown=0.0,
         calmar_ratio=float("nan"),
-        omega_ratio=1.0,
+        omega_ratio=float("nan"),
         p_value=1.0,
         combined_p_value=float("nan"),
         reality_check_p_value=float("nan"),

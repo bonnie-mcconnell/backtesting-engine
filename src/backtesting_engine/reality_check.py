@@ -147,7 +147,7 @@ def _stationary_bootstrap_resample(
     Args:
         data: Array of shape (T, k).
         p: Geometric distribution parameter (1/mean_block_length).
-        T: Target resample length.
+        n_periods: Target resample length (number of rows in output).
         rng: NumPy random generator.
 
     Returns:

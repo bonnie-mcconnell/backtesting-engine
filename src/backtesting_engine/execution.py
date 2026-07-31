@@ -13,8 +13,12 @@ Fill-at-close with a fixed fee is the best-case scenario. Real execution adds:
 
 2. Signal delay - the close isn't known until after market close; you can't act
    on it the same bar. With delay=1 the signal fires on day t and fills at
-   day t+1's close (approximating a t+1 open fill). Many strategies that look
-   good on close prices go marginal with a one-day delay.
+   day t+1's close. This is a next-close fill, not a next-open fill; a strategy
+   that generates a signal at bar t close and executes at bar t+1 open would
+   capture only the open-to-close return on day t+1, whereas this model captures
+   the full day t close-to-close return. Both are standard in academic backtesting;
+   the close-to-close model is slightly more optimistic, though a one-day signal
+   delay makes close-to-close results significantly worse than fill-at-signal-bar.
 
 3. Cost sensitivity sweep - runs a full walk-forward at each (cost, slippage)
    grid point and returns a 2D heatmap of Fisher p-values. The breakeven cost
@@ -59,9 +63,9 @@ class ExecutionConfig:
     For zero-friction comparison (e.g. to verify strategy logic in isolation):
         ExecutionConfig(transaction_cost_rate=0, slippage_factor=0, signal_delay=0)
     """
-    transaction_cost_rate: float = TRANSACTION_COST_RATE   # 0.001 = 0.1% per side
-    slippage_factor: float = 0.05    # fraction of daily high-low range; 0 = fill at close
-    signal_delay: int = 1            # bars; 1 prevents lookahead bias
+    transaction_cost_rate: float = TRANSACTION_COST_RATE  # 0.001 = 0.1% per side
+    slippage_factor: float = 0.05  # fraction of daily high-low range; 0 = fill at close
+    signal_delay: int = 1  # bars; 1 = next-close fill (prevents look-ahead)
 
     def __post_init__(self) -> None:
         if self.transaction_cost_rate < 0:
@@ -131,7 +135,7 @@ def run_simulation_with_execution(
 
     close = data["close"].to_numpy(dtype=float)
     high = data["high"].to_numpy(dtype=float) if "high" in data.columns else close
-    low  = data["low"].to_numpy(dtype=float)  if "low"  in data.columns else close
+    low = data["low"].to_numpy(dtype=float) if "low" in data.columns else close
 
     if execution.signal_delay > 0:
         delay = execution.signal_delay
@@ -145,14 +149,14 @@ def run_simulation_with_execution(
     trades: list[Trade] = []
     portfolio_values: list[float] = []
 
-    slippage  = execution.slippage_factor
+    slippage = execution.slippage_factor
     cost_rate = execution.transaction_cost_rate
 
     for idx, (date, signal) in enumerate(signals.items()):
         date = pd.Timestamp(str(date))
         daily_range = high[idx] - low[idx]
 
-        buy_fill  = close[idx] + slippage * daily_range
+        buy_fill = close[idx] + slippage * daily_range
         sell_fill = close[idx] - slippage * daily_range
 
         if position is None and signal == 1:
@@ -174,7 +178,7 @@ def run_simulation_with_execution(
         elif position is not None and signal == -1:
             sell_proceeds = position.shares * sell_fill
             sell_cost = sell_proceeds * cost_rate
-            buy_cost  = position.shares * position.entry_price * cost_rate
+            buy_cost = position.shares * position.entry_price * cost_rate
             pnl = (
                 (sell_proceeds - sell_cost)
                 - (position.shares * position.entry_price + buy_cost)
@@ -199,7 +203,7 @@ def run_simulation_with_execution(
         sell_fill_final = close[-1] - slippage * (high[-1] - low[-1])
         sell_proceeds = position.shares * sell_fill_final
         sell_cost = sell_proceeds * cost_rate
-        buy_cost  = position.shares * position.entry_price * cost_rate
+        buy_cost = position.shares * position.entry_price * cost_rate
         pnl = (
             (sell_proceeds - sell_cost)
             - (position.shares * position.entry_price + buy_cost)
@@ -254,8 +258,8 @@ def _sweep_worker(
 
     _strategy_map = {
         "MovingAverageStrategy": MovingAverageStrategy,
-        "KalmanFilterStrategy":  KalmanFilterStrategy,
-        "MomentumStrategy":      MomentumStrategy,
+        "KalmanFilterStrategy": KalmanFilterStrategy,
+        "MomentumStrategy": MomentumStrategy,
     }
     strategy_cls = _strategy_map.get(strategy_name)
     if strategy_cls is None:
@@ -299,6 +303,11 @@ def cost_sensitivity_sweep(
     On an 8-core machine a 5×5 grid that takes ~12 minutes serially finishes
     in ~2 minutes.
 
+    Note: parallel mode (n_workers > 1) reconstructs the strategy by class name
+    across subprocesses and only supports the three built-in strategies. Custom
+    strategies work correctly with n_workers=1 (the default), which runs
+    sequentially in the calling process without reconstruction.
+
     Returns:
         Dict mapping (cost_rate, slippage_factor) → Fisher p-value.
         NaN if walk_forward raised for that combination.
@@ -312,20 +321,38 @@ def cost_sensitivity_sweep(
         n_workers = os.cpu_count() or 1
 
     strategy_name = strategy.__class__.__name__
-    execution_signal_delay = signal_delay
     pairs = [(c, s) for c in cost_rates for s in slippage_factors]
     worker_args = [
         ((c, s), data, strategy_name, training_window_years, testing_window_years,
-         bootstrap_seed, execution_signal_delay)
+         bootstrap_seed, signal_delay)
         for c, s in pairs
     ]
 
     results: dict[tuple[float, float], float] = {}
 
     if n_workers == 1:
-        for wargs in worker_args:
-            key, p_val = _sweep_worker(wargs)
-            results[key] = p_val
+        # Sequential path: call walk_forward directly so custom strategies work.
+        # _sweep_worker reconstructs by class name (required for pickling across
+        # subprocesses) and silently returns NaN for unknown strategy classes.
+        from backtesting_engine.walk_forward import walk_forward
+        for cost, slip in pairs:
+            exec_config = ExecutionConfig(
+                transaction_cost_rate=cost,
+                slippage_factor=slip,
+                signal_delay=signal_delay,
+            )
+            try:
+                result = walk_forward(
+                    data,
+                    strategy,
+                    training_window_years=training_window_years,
+                    testing_window_years=testing_window_years,
+                    execution=exec_config,
+                    bootstrap_seed=bootstrap_seed,
+                )
+                results[(cost, slip)] = result.summary_metrics.combined_p_value
+            except ValueError:
+                results[(cost, slip)] = float("nan")
     else:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             futures = {executor.submit(_sweep_worker, wargs): wargs for wargs in worker_args}

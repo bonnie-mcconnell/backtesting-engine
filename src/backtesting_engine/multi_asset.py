@@ -29,6 +29,7 @@ from pathlib import Path
 
 from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
 from backtesting_engine.config import (
+    ANNUALISATION_FACTOR,
     BLOCK_BOOTSTRAP_SEED,
     TESTING_WINDOW_YEARS,
     TRAINING_WINDOW_YEARS,
@@ -44,18 +45,25 @@ from backtesting_engine.strategy.momentum import MomentumStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
 
-# Minimum rows needed for at least one 3+1yr walk-forward window.
-# MA long window (200 days) added to ensure the strategy can fit on train data.
-_MIN_ROWS = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * 252 + 200
+
+def _min_rows(train_years: int, test_years: int) -> int:
+    """Minimum rows for at least one walk-forward window.
+
+    Mirrors main.py's _min_rows(). MA context is taken from the tail of
+    the training window, not from extra rows beyond it, so no warmup padding
+    is needed here.
+    """
+    return (train_years + test_years) * ANNUALISATION_FACTOR
+
 
 _DEFAULT_TICKERS = ["SPY", "QQQ", "TLT", "GLD"]
 
 # Maps CLI strategy name → (factory, short label for filenames and table headers).
 # Factory is a zero-argument callable so each ticker gets a fresh strategy instance.
 _STRATEGY_MAP: dict[str, tuple[type[BaseStrategy], str]] = {
-    "ma":       (MovingAverageStrategy,  "MA Crossover"),
-    "kalman":   (KalmanFilterStrategy,   "Kalman Filter"),
-    "momentum": (MomentumStrategy,       "Momentum"),
+    "ma": (MovingAverageStrategy, "MA Crossover"),
+    "kalman": (KalmanFilterStrategy, "Kalman Filter"),
+    "momentum": (MomentumStrategy, "Momentum"),
 }
 
 
@@ -70,6 +78,7 @@ def run_multi_asset(
     output_dir: Path,
     strategy: str = "ma",
     no_dashboard: bool = False,
+    use_cache: bool = True,
 ) -> dict[str, tuple[BacktestResult, BenchmarkResult]]:
     """
     Run walk-forward validation on each ticker independently.
@@ -90,6 +99,8 @@ def run_multi_asset(
         bootstrap_seed: Random seed for bootstrap reproducibility.
         output_dir: Directory to write individual dashboards.
         strategy: One of "ma", "kalman", "momentum", "all" (default: "ma").
+        no_dashboard: If True, skip per-ticker dashboard generation.
+        use_cache: If False, force fresh data download ignoring local cache.
 
     Returns:
         Dict mapping key → (BacktestResult, BenchmarkResult). Key is ticker
@@ -124,8 +135,8 @@ def run_multi_asset(
             if end is not None:
                 yf_end = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
 
-            data = load_data(ticker, start, end_date=yf_end, use_cache=True)
-            validate_data(data, min_rows=_MIN_ROWS)
+            data = load_data(ticker, start, end_date=yf_end, use_cache=use_cache)
+            validate_data(data, min_rows=_min_rows(train_years, test_years))
         except Exception as exc:
             print(f"  ⚠  {ticker}: skipped ({type(exc).__name__}: {exc})")
             continue
@@ -368,6 +379,12 @@ def _parse_args() -> argparse.Namespace:
         help="Directory for output dashboards (default: current directory)",
     )
     parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Force fresh data download, ignoring local cache.",
+    )
+    parser.add_argument(
         "--no-dashboard",
         action="store_true",
         default=False,
@@ -414,6 +431,7 @@ def main() -> None:
         output_dir=output_dir,
         strategy=args.strategy,
         no_dashboard=args.no_dashboard,
+        use_cache=not args.no_cache,
     )
 
     if args.strategy == "all":

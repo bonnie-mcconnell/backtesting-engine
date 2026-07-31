@@ -18,7 +18,7 @@ the adjusted close is reduced by the dividend amount, which can place it slightl
 outside the adjusted [low, high] band due to rounding. load_data() clips the adjusted
 close to [low, high] on such dates so the slippage model never produces a negative
 intraday range. The clip is applied only when the discrepancy is below a threshold
-(0.5% of close) - larger discrepancies indicate a data error and raise rather than
+(0.5% of close); larger discrepancies indicate a data error and raise rather than
 silently adjust.
 
 Downloaded data is cached as Parquet in ~/.cache/backtesting-engine/. A cached
@@ -92,7 +92,11 @@ def _cache_path(ticker: str, start_date: str, end_date: str | None = None) -> Pa
     """Return the Parquet cache path for a (ticker, start_date, end_date) triple."""
     end_str = end_date or "latest"
     key = f"{ticker.upper()}_{start_date}_{end_str}"
-    safe = hashlib.md5(key.encode()).hexdigest()[:12]
+    # MD5 here is a filename hash, not a security boundary - collision resistance
+    # doesn't matter because the input (ticker + dates) is never adversarial.
+    # usedforsecurity=False tells both readers and security scanners (bandit
+    # flags all hashlib.md5() calls by default) that this is intentional.
+    safe = hashlib.md5(key.encode(), usedforsecurity=False).hexdigest()[:12]
     return _CACHE_DIR / f"{ticker.upper()}_{safe}.parquet"
 
 
@@ -186,9 +190,12 @@ def _download_and_clean(
             continue
 
         if raw is not None and not raw.empty:
-            break   # success
+            break   # success; skips the else clause below
     else:
-        # All attempts returned empty or raised.
+        # Python for...else: the else clause runs only when the loop finishes
+        # without hitting a break. Here that means every attempt either raised
+        # or returned empty data. If the last attempt raised, last_exc is set.
+        # If it returned empty (no raise), last_exc is None.
         if last_exc is not None:
             raise ValueError(
                 f"Failed to download data for '{ticker}' after {_MAX_DOWNLOAD_RETRIES} "
@@ -198,13 +205,6 @@ def _download_and_clean(
         raise ValueError(
             f"No data returned for ticker '{ticker}' between {start_date} and "
             f"{end_ts.date()} after {_MAX_DOWNLOAD_RETRIES} attempts. "
-            "Check that the ticker is valid and the date range has trading activity."
-        )
-
-    if raw is None or raw.empty:
-        raise ValueError(
-            f"No data returned for ticker '{ticker}' "
-            f"between {start_date} and {end_ts.date()}. "
             "Check that the ticker is valid and the date range has trading activity."
         )
 

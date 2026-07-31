@@ -2,7 +2,7 @@
 Structural validation for backtesting input data.
 
 Validates that a DataFrame meets the structural and content requirements
-before it enters the pipeline. Does not transform data - only checks and raises.
+before it enters the pipeline. Does not transform data; it only checks and raises.
 
 The minimum row check is parameterised rather than importing a strategy-specific
 constant. The caller (typically the orchestrator or main.py) is responsible for

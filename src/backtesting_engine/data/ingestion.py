@@ -107,8 +107,7 @@ def _load_from_cache(
     Return cached data if it exists and is fresh, otherwise None.
 
     Freshness check: file modification time within _CACHE_MAX_AGE_HOURS.
-    Fixed end_date runs use a much longer TTL (365 days) since the data
-    is frozen by definition and should not be re-downloaded unnecessarily.
+    Fixed end_date = data is frozen; use 1-year TTL to avoid pointless re-downloads.
     If the file exists but is stale, it is left in place (will be overwritten
     on next successful download).
     """
@@ -116,7 +115,7 @@ def _load_from_cache(
     if not path.exists():
         return None
 
-    # Fixed end_date → data is frozen; use 1-year TTL to avoid pointless re-downloads.
+    # Fixed end_date = data is frozen; use 1-year TTL to avoid pointless re-downloads.
     max_age = (365 * 24) if end_date is not None else _CACHE_MAX_AGE_HOURS
     age_hours = (time.time() - path.stat().st_mtime) / 3600
     if age_hours > max_age:

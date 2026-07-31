@@ -98,6 +98,14 @@ class MovingAverageStrategy(BaseStrategy):
                     best_short = short
                     best_long = long
 
+        if not evaluated:
+            raise ValueError(
+                f"No (short, long) pairs could be evaluated: training data has "
+                f"{len(train_data)} bars but the smallest long window in the grid "
+                f"requires at least {long_min + 1} bars. "
+                "Pass more training data or reduce long_min in config.py."
+            )
+
         self.short_window_ = best_short
         self.long_window_ = best_long
         self._all_candidate_pairs_ = evaluated
@@ -163,26 +171,10 @@ class MovingAverageStrategy(BaseStrategy):
         combined = pd.concat([context_data, test_data])
         all_signals = self._compute_signals(combined, self.short_window_, self.long_window_)
         test_signals = all_signals.loc[test_data.index].copy()
-
-        # Detect position at the context/test boundary.
-        # If short MA > long MA on the last context bar, the strategy is long.
-        # In that case, inject a buy signal at the first test bar so the simulator
-        # opens the position rather than starting flat.
-        close = combined["close"]
-        short_ma = close.rolling(self.short_window_).mean()
-        long_ma = close.rolling(self.long_window_).mean()
-
-        last_context_idx = context_data.index[-1]
-        if (
-            last_context_idx in short_ma.index
-            and not pd.isna(short_ma.loc[last_context_idx])
-            and not pd.isna(long_ma.loc[last_context_idx])
-            and short_ma.loc[last_context_idx] > long_ma.loc[last_context_idx]
-            and test_signals.iloc[0] == 0  # no signal already at bar 0
-        ):
-            test_signals.iloc[0] = 1  # carry long position forward
-
-        return test_signals
+        return _apply_boundary_carryover(
+            combined, context_data, test_signals,
+            self.short_window_, self.long_window_,
+        )
 
     def candidate_test_returns(
         self,
@@ -218,22 +210,7 @@ class MovingAverageStrategy(BaseStrategy):
                 combined = pd.concat([context_data, test_data])
                 all_sig = self._compute_signals(combined, short, long)
                 signals = all_sig.loc[test_data.index].copy()
-
-                # Apply the same boundary carry-over logic as
-                # generate_signals_with_context so RC candidates and the
-                # selected strategy are evaluated under identical state.
-                c = combined["close"]
-                short_ma = c.rolling(short).mean()
-                long_ma = c.rolling(long).mean()
-                last_ctx_idx = context_data.index[-1]
-                if (
-                    last_ctx_idx in short_ma.index
-                    and not pd.isna(short_ma.loc[last_ctx_idx])
-                    and not pd.isna(long_ma.loc[last_ctx_idx])
-                    and short_ma.loc[last_ctx_idx] > long_ma.loc[last_ctx_idx]
-                    and signals.iloc[0] == 0
-                ):
-                    signals.iloc[0] = 1
+                signals = _apply_boundary_carryover(combined, context_data, signals, short, long)
             else:
                 signals = self._compute_signals(test_data, short, long)
 
@@ -268,3 +245,55 @@ class MovingAverageStrategy(BaseStrategy):
             close.rolling(short_window).mean() > close.rolling(long_window).mean()
         ).fillna(False)
         return above.astype(int).diff().fillna(0).astype(int)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _apply_boundary_carryover(
+    combined: pd.DataFrame,
+    context_data: pd.DataFrame,
+    test_signals: pd.Series,
+    short_window: int,
+    long_window: int,
+) -> pd.Series:
+    """
+    Inject a buy signal at test bar 0 if the strategy is long at the boundary.
+
+    MA crossover emits signals only on crossover bars (diff of a 0/1 indicator).
+    If the short MA is already above the long MA at the last context bar, the
+    strategy is in a long position, but no buy signal fires at test bar 0
+    because the diff is 0 (no change). Without this correction, the simulator
+    starts flat and the first test bar captures no position despite the
+    strategy being long from the training window.
+
+    Called from both generate_signals_with_context and candidate_test_returns
+    to ensure the selected strategy and all RC candidates are evaluated under
+    identical carry-over assumptions.
+
+    Args:
+        combined: Concatenation of context_data and test_data.
+        context_data: Warmup tail from training window.
+        test_signals: Signal series already sliced to test_data.index.
+        short_window: MA short window for this candidate.
+        long_window: MA long window for this candidate.
+
+    Returns:
+        test_signals, possibly with iloc[0] set to 1.
+    """
+    close = combined["close"]
+    short_ma = close.rolling(short_window).mean()
+    long_ma = close.rolling(long_window).mean()
+    last_ctx_idx = context_data.index[-1]
+
+    if (
+        last_ctx_idx in short_ma.index
+        and not pd.isna(short_ma.loc[last_ctx_idx])
+        and not pd.isna(long_ma.loc[last_ctx_idx])
+        and short_ma.loc[last_ctx_idx] > long_ma.loc[last_ctx_idx]
+        and test_signals.iloc[0] == 0
+    ):
+        test_signals.iloc[0] = 1
+
+    return test_signals

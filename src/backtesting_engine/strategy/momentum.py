@@ -99,6 +99,13 @@ class MomentumStrategy(BaseStrategy):
 
         self.lookback_ = best_lookback
         self._all_lookbacks_ = evaluated
+        if not evaluated:
+            raise ValueError(
+                f"No lookback could be evaluated: training data has {len(close)} bars "
+                f"but the smallest lookback in the grid requires at least "
+                f"{min(MOMENTUM_LOOKBACKS) + 2} bars. "
+                "Pass more training data or reduce MOMENTUM_LOOKBACKS in config.py."
+            )
         return self
 
     def generate_signals(self, data: pd.DataFrame) -> pd.Series:
@@ -111,13 +118,19 @@ class MomentumStrategy(BaseStrategy):
         self, context_data: pd.DataFrame, test_data: pd.DataFrame
     ) -> pd.Series:
         """
-        Generate signals with training-tail warmup, preserving position carry-over.
+        Generate signals with training-tail warmup from context_data.
 
-        Prepends context_data so the lookback window is fully populated at the
-        start of the test period. Also injects a buy signal at the first test bar
-        when the strategy would already be long at the context/test boundary -
-        preventing the false position reset that occurs when the buy signal fired
-        inside the context window rather than the test window.
+        context_window_size() returns exactly lookback_ bars, which is enough
+        to compute one momentum value - the one at test bar 0 (comparing
+        test_data.index[0]'s close to context_data.index[0]'s close, lookback_
+        bars apart). No explicit boundary carry-over is needed here, unlike
+        MovingAverageStrategy and KalmanFilterStrategy: momentum's signal is a
+        direct function of the current bar's T-day return, not of a transition
+        from a prior state, so "is momentum positive right now" is the whole
+        answer - there's no separate "was the position already open" question
+        to carry forward. (Verified: test bar 0's signal here always agrees
+        with momentum computed directly from the unwindowed series. See
+        TestMomentumBoundaryCorrectness in test_strategy.py.)
 
         Args:
             context_data: Tail of training data (last lookback_ bars).
@@ -128,23 +141,7 @@ class MomentumStrategy(BaseStrategy):
         """
         combined = pd.concat([context_data, test_data])
         all_signals = self.generate_signals(combined)
-        test_signals = all_signals.loc[test_data.index].copy()
-
-        # Detect whether momentum was positive at the last context bar.
-        # If yes, the strategy is long entering the test window - carry it forward.
-        close = combined["close"].to_numpy(dtype=float)
-        n_context = len(context_data)
-        lb = self.lookback_
-
-        if n_context >= lb:
-            last_context_pos = n_context - 1  # index into combined
-            if last_context_pos >= lb:
-                log_close = np.log(np.maximum(close, 1e-10))
-                momentum_at_boundary = log_close[last_context_pos] - log_close[last_context_pos - lb]
-                if momentum_at_boundary > 0 and test_signals.iloc[0] == 0:
-                    test_signals.iloc[0] = 1  # carry long position forward
-
-        return test_signals
+        return all_signals.loc[test_data.index].copy()
 
     def candidate_test_returns(
         self,
@@ -158,10 +155,14 @@ class MomentumStrategy(BaseStrategy):
         grid search universe. Used by walk_forward to build the
         Reality Check candidate matrix.
 
-        Boundary carry-over is applied identically to generate_signals_with_context:
-        if a candidate's momentum is positive at the context/test boundary, a buy
-        signal is injected at test bar 0. Without this, the RC candidates and the
-        selected strategy are evaluated under different state assumptions.
+        No boundary carry-over is needed here - see generate_signals_with_context
+        for why momentum's test-bar-0 signal is already correct without it.
+        All candidates receive the same context_data (length = lookback_, the
+        calibrated lookback). Candidates with lb > lookback_ have fewer than lb
+        warmup bars available, so their signals are zero for the first
+        (lb - lookback_) test bars. This understates larger-lb candidates
+        slightly, making RC conservative for those candidates. Candidates with
+        lb <= lookback_ are unaffected.
 
         Args:
             test_data: Out-of-sample test period.
@@ -180,21 +181,7 @@ class MomentumStrategy(BaseStrategy):
                     close_test,
                 ])
                 all_signals_raw = _momentum_signals(combined_close, lb)
-                signals = all_signals_raw[len(context_data):].copy()
-
-                # Apply the same boundary carry-over logic as
-                # generate_signals_with_context so RC candidates and the
-                # selected strategy are evaluated under identical state.
-                n_context = len(context_data)
-                if n_context >= lb:
-                    last_context_pos = n_context - 1
-                    if last_context_pos >= lb:
-                        log_close = np.log(np.maximum(combined_close, 1e-10))
-                        momentum_at_boundary = (
-                            log_close[last_context_pos] - log_close[last_context_pos - lb]
-                        )
-                        if momentum_at_boundary > 0 and signals[0] == 0:
-                            signals[0] = 1
+                signals = all_signals_raw[len(context_data):]
             else:
                 signals = _momentum_signals(close_test, lb)
 

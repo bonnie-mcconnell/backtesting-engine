@@ -43,7 +43,7 @@ import plotly.graph_objects as go
 import plotly.subplots as sp
 from scipy import stats as sp_stats
 
-from backtesting_engine.config import ANNUALISATION_FACTOR, INITIAL_PORTFOLIO_VALUE
+from backtesting_engine.config import ANNUALISATION_FACTOR, INITIAL_PORTFOLIO_VALUE, RISK_FREE_RATE
 from backtesting_engine.models import BacktestResult, WindowResult
 
 if TYPE_CHECKING:
@@ -320,10 +320,11 @@ def _stitch_returns(valid_windows: list[WindowResult]) -> np.ndarray:
 
 
 def _rolling_sharpe(equity: pd.Series, window: int = 63) -> pd.Series:
-    """63-day rolling annualised Sharpe ratio."""
+    """63-day rolling annualised Sharpe ratio, using the same risk-free rate as metrics.py."""
     returns = equity.pct_change().dropna()
-    roll_mean = returns.rolling(window).mean()
-    roll_std = returns.rolling(window).std(ddof=1)
+    excess = returns - RISK_FREE_RATE
+    roll_mean = excess.rolling(window).mean()
+    roll_std = excess.rolling(window).std(ddof=1)
     sharpe = (roll_mean / roll_std) * np.sqrt(ANNUALISATION_FACTOR)
     return sharpe.dropna()
 
@@ -335,6 +336,12 @@ def _has_param_evolution(result: BacktestResult) -> bool:
 
 # ---------------------------------------------------------------------------
 # Panel rendering
+#
+# Many Plotly calls below use `row=row, col=col` kwargs. Plotly's type stubs
+# declare these as keyword-only on make_subplots() but don't include them
+# on add_trace(), add_hline(), update_xaxes(), update_yaxes(), or add_vrect().
+# They are valid at runtime (Plotly processes them correctly via **kwargs) but
+# pyright reports reportArgumentType. Each affected line is suppressed inline.
 # ---------------------------------------------------------------------------
 
 def _add_equity_curve(

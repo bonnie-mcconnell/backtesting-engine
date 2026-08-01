@@ -8,6 +8,7 @@ comparison table rendering, and CLI argument parsing.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,13 +16,23 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import backtesting_engine.multi_asset as _ma_module
 from backtesting_engine.benchmark import BenchmarkResult
 from backtesting_engine.execution import ExecutionConfig
-from backtesting_engine.models import BacktestResult
+from backtesting_engine.models import (
+    BacktestResult,
+    MetricsResult,
+    SimulationResult,
+    WindowResult,
+)
 from backtesting_engine.multi_asset import (
     _STRATEGY_MAP,
+    _min_rows,
     _print_comparison_table,
     run_multi_asset,
+)
+from backtesting_engine.multi_asset import (
+    _parse_args as _multi_parse_args,
 )
 
 
@@ -35,12 +46,10 @@ def _make_ohlc(n: int = 756, seed: int = 0) -> pd.DataFrame:
     low = close - rng.uniform(0.1, 1.0, n)
     return pd.DataFrame({"close": close, "high": high, "low": low}, index=dates)
 
-
 def _mock_load_data(ticker: str, start: str, end_date: str | None = None, use_cache: bool = True) -> pd.DataFrame:
     """Return synthetic data instead of hitting the network."""
     seed = hash(ticker) % 100
     return _make_ohlc(n=756, seed=seed)
-
 
 class TestRunMultiAsset:
     """
@@ -137,6 +146,99 @@ class TestRunMultiAsset:
         assert math.isfinite(m.sharpe_ratio), "Sharpe must be finite for valid run"
         assert 0.0 <= m.combined_p_value <= 1.0, "Fisher p must be in [0, 1]"
 
+class TestMinRows:
+    """
+    _min_rows(train_years, test_years) must reflect the actual requested
+    window sizes, not a hardcoded default.
+
+    Found via end-to-end CLI testing (not unit tests): every existing test in
+    TestRunMultiAsset patches validate_data into a no-op, so none of them ever
+    exercised the real validation logic this class tests directly. The
+    original bug - a module-level _MIN_ROWS constant computed once from the
+    default TRAINING_WINDOW_YEARS/TESTING_WINDOW_YEARS - had two failure
+    modes: `backtesting-multi --train-years 1 --test-years 1` rejected data
+    that was actually long enough (504 rows needed, but it demanded 1008),
+    and `--train-years 5 --test-years 2` accepted data that was too short
+    (1764 rows needed, but it only checked for 1008), pushing the failure
+    into a less specific error message deeper inside walk_forward().
+    """
+
+    def test_min_rows_scales_with_requested_years(self) -> None:
+        from backtesting_engine.config import ANNUALISATION_FACTOR
+        assert _min_rows(1, 1) == (1 + 1) * ANNUALISATION_FACTOR
+        assert _min_rows(5, 2) == (5 + 2) * ANNUALISATION_FACTOR
+        assert _min_rows(1, 1) < _min_rows(5, 2)
+
+    def test_min_rows_consistent_with_main_module(self) -> None:
+        """multi_asset._min_rows and main._min_rows must agree for all inputs.
+
+        Both modules compute the same formula. If they diverge, a ticker that
+        passes validation in one CLI entry point fails in the other for the same
+        parameters, which would be silently wrong in cross-asset runs.
+        """
+        from backtesting_engine.main import _min_rows as main_min_rows
+        for train in (1, 2, 3, 5):
+            for test in (1, 2):
+                assert _min_rows(train, test) == main_min_rows(train, test), (
+                    f"_min_rows({train}, {test}): "
+                    f"multi_asset={_min_rows(train, test)}, "
+                    f"main={main_min_rows(train, test)}"
+                )
+
+    def test_short_custom_window_accepts_data_too_short_for_default(
+        self, tmp_path: Path
+    ) -> None:
+        """756 rows is enough for 1yr/1yr (needs 504) but not the default
+        3yr/1yr (needs 1008). Uses the REAL validate_data, not mocked away."""
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_mock_load_data):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+            )
+        assert "SPY" in results, (
+            "756-row data should pass validation for explicitly requested "
+            "1yr/1yr windows (needs 704 rows), even though it's short of "
+            "the unrelated 3yr/1yr default (1008 rows)."
+        )
+
+    def test_long_custom_window_rejects_data_long_enough_for_default(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """1300 rows clears the default 3yr/1yr requirement (1008) but is too
+        short for an explicitly requested 5yr/2yr (needs 1764). Must be
+        rejected by validate_data itself, not by a less specific failure
+        further inside walk_forward() - checking only that the ticker is
+        absent from results isn't enough, since walk_forward's own internal
+        validation would also reject 1300 rows for 5yr/2yr windows (just with
+        a vaguer message), which would make this test pass even with the
+        original bug. Check the actual warning text instead.
+        """
+        def _load_1300_rows(ticker: str, start: str, end_date: str | None = None, use_cache: bool = True) -> pd.DataFrame:
+            return _make_ohlc(n=1300, seed=1)
+
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_load_1300_rows):
+            results = run_multi_asset(
+                tickers=["SPY"],
+                start="2005-01-01",
+                end="2020-12-31",
+                execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
+                train_years=5,
+                test_years=2,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+            )
+        assert "SPY" not in results
+        out = capsys.readouterr().out
+        assert "1764" in out, (
+            f"Expected validate_data's own message citing the correct "
+            f"requirement (1764 rows for 5yr/2yr), got: {out!r}"
+        )
 
 class TestPrintComparisonTable:
     """
@@ -149,10 +251,6 @@ class TestPrintComparisonTable:
         self, tickers: list[str]
     ) -> dict[str, tuple[BacktestResult, BenchmarkResult]]:
         """Build minimal fake results without running walk_forward."""
-        import pandas as pd
-
-        from backtesting_engine.models import MetricsResult, SimulationResult, WindowResult
-
         fake_results: dict[str, tuple[BacktestResult, BenchmarkResult]] = {}
         for i, ticker in enumerate(tickers):
             dates = pd.date_range("2010-01-01", periods=2, freq="B")
@@ -208,29 +306,22 @@ class TestPrintComparisonTable:
         results = self._make_fake_results(["TLT"])
         _print_comparison_table(results)  # must not raise
 
-
 class TestMultiAssetModule:
     """Verify the module is importable as __main__ and has a valid CLI."""
 
     def test_module_importable(self) -> None:
-        import backtesting_engine.multi_asset as ma
-        assert hasattr(ma, "run_multi_asset")
-        assert hasattr(ma, "main")
-        assert hasattr(ma, "_parse_args")
+        assert hasattr(_ma_module, "run_multi_asset")
+        assert hasattr(_ma_module, "main")
+        assert hasattr(_ma_module, "_parse_args")
 
     def test_help_does_not_crash(self) -> None:
         """--help should print and raise SystemExit(0)."""
-        import sys
-
-        from backtesting_engine.multi_asset import _parse_args
-
         old_argv = sys.argv
         sys.argv = ["multi_asset", "--help"]
         with pytest.raises(SystemExit) as exc_info:
-            _parse_args()
+            _multi_parse_args()
         assert exc_info.value.code == 0
         sys.argv = old_argv
-
 
 class TestStrategyParameter:
     """
@@ -413,10 +504,6 @@ class TestStrategyParameter:
 
     def test_comparison_table_with_strategy_label(self, capsys: pytest.CaptureFixture) -> None:
         # _print_comparison_table must render the strategy_label in the header.
-        import pandas as pd
-
-        from backtesting_engine.models import MetricsResult, SimulationResult, WindowResult
-
         dates = pd.date_range("2010-01-01", periods=2, freq="B")
         pv = pd.Series([100000.0, 101000.0], index=dates)
         sim = SimulationResult(trades=[], portfolio_values=pv, message="")
@@ -448,12 +535,84 @@ class TestStrategyParameter:
         assert "Momentum" in captured.out
 
     def test_help_shows_strategy_choices(self) -> None:
-        import sys
-
-        from backtesting_engine.multi_asset import _parse_args
         old_argv = sys.argv
         sys.argv = ["backtesting-multi", "--help"]
         with pytest.raises(SystemExit) as exc_info:
-            _parse_args()
+            _multi_parse_args()
         assert exc_info.value.code == 0
         sys.argv = old_argv
+
+    def test_no_cache_flag_default_false(self) -> None:
+        old_argv = sys.argv
+        sys.argv = ["backtesting-multi", "--tickers", "SPY"]
+        args = _multi_parse_args()
+        assert args.no_cache is False
+        sys.argv = old_argv
+
+    def test_no_cache_flag_sets_true(self) -> None:
+        old_argv = sys.argv
+        sys.argv = ["backtesting-multi", "--tickers", "SPY", "--no-cache"]
+        args = _multi_parse_args()
+        assert args.no_cache is True
+        sys.argv = old_argv
+
+class TestNoCacheFlag:
+    """--no-cache must thread use_cache=False through to load_data."""
+
+    def test_no_cache_threads_to_load_data(self, tmp_path: Path) -> None:
+        calls: list[bool] = []
+
+        def _capturing_load(
+            ticker: str,
+            start: str,
+            end_date: str | None = None,
+            use_cache: bool = True,
+        ) -> pd.DataFrame:
+            calls.append(use_cache)
+            return _mock_load_data(ticker, start, end_date=end_date, use_cache=use_cache)
+
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_capturing_load):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2010-01-01",
+                end=None,
+                execution=ExecutionConfig(),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+                use_cache=False,
+            )
+
+        assert calls, "load_data was never called"
+        assert all(c is False for c in calls), (
+            f"Expected use_cache=False on all calls, got {calls}"
+        )
+
+    def test_use_cache_defaults_to_true(self, tmp_path: Path) -> None:
+        calls: list[bool] = []
+
+        def _capturing_load(
+            ticker: str,
+            start: str,
+            end_date: str | None = None,
+            use_cache: bool = True,
+        ) -> pd.DataFrame:
+            calls.append(use_cache)
+            return _mock_load_data(ticker, start, end_date=end_date, use_cache=use_cache)
+
+        with patch("backtesting_engine.multi_asset.load_data", side_effect=_capturing_load):
+            run_multi_asset(
+                tickers=["SPY"],
+                start="2010-01-01",
+                end=None,
+                execution=ExecutionConfig(),
+                train_years=1,
+                test_years=1,
+                bootstrap_seed=42,
+                output_dir=tmp_path,
+            )
+
+        assert all(c is True for c in calls), (
+            f"Expected use_cache=True by default, got {calls}"
+        )

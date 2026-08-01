@@ -19,7 +19,7 @@ than sufficient for all of these properties while being ~50× faster.
 The autouse session-scoped fixture below patches N_PERMUTATIONS globally for
 the entire test session. It targets both sites where the value is read at
 call time:
-  - backtesting_engine.metrics, _monte_carlo_p_value
+  - backtesting_engine.metrics, _block_bootstrap_p_value
   - backtesting_engine.reality_check, white_reality_check
 
 Both read N_PERMUTATIONS as a bare module-level name inside the function body,
@@ -36,9 +36,14 @@ a few minutes locally and comfortably inside the CI timeout.
 Cached walk_forward results
 ----------------------------
 walk_forward() is the most expensive operation in the test suite. Even with
-pre-fixed MA windows (no grid search) and 200 bootstrap permutations, each
-call takes ~1-2s. Many test classes merely inspect properties of a result
-rather than verifying the call itself - they can share a cached result.
+200 bootstrap permutations, each call takes ~1-2s. (MA's grid search itself
+is not the bottleneck - MovingAverageStrategy.fit() always searches the full
+(short, long) grid, ~112 pairs, regardless of the constructor's short_window/
+long_window args; those are overwritten by fit() every time, as documented
+on the class. The grid search is just cheap - vectorised rolling means over
+a few hundred bars - so this doesn't matter for runtime.) Many test classes
+merely inspect properties of a result rather than verifying the call itself -
+they can share a cached result.
 
 wf_result_504 and wf_result_756 are module-scoped fixtures that run
 walk_forward once per test module that requests them. Tests in the same module
@@ -66,7 +71,7 @@ from backtesting_engine.walk_forward import walk_forward
 # Number of bootstrap permutations used during tests.
 # Production value is 10_000 (config.py). Tests need ~200 to verify
 # statistical correctness (direction, range, reproducibility) without
-# spending 90+ minutes on Monte Carlo sampling.
+# spending 90+ minutes on block bootstrap sampling.
 _TEST_N_PERMUTATIONS = 200
 
 # Zero-friction execution config for tests using close-only synthetic data.
@@ -115,12 +120,14 @@ def oscillating_756_ohlc() -> pd.DataFrame:
 @pytest.fixture
 def strategy() -> MovingAverageStrategy:
     """
-    Fixed-window MovingAverageStrategy for tests that need a strategy instance.
+    Plain MovingAverageStrategy instance for tests that need one to pass to
+    walk_forward() or inspect directly.
 
-    Short/long windows are set explicitly so fit() skips the full grid search
-    and tests run in seconds rather than minutes. Only use this fixture when
-    testing the walk-forward orchestrator or benchmark - tests that exercise
-    fit() itself should construct MovingAverageStrategy() with no arguments.
+    Note: short_window=20, long_window=50 here are placeholder constructor
+    values, not a performance optimisation - fit() always searches the full
+    grid and overwrites both (see MovingAverageStrategy's class docstring).
+    They matter only for __init__'s short<long validation and as the
+    fallback if a window never has enough training data to fit.
     """
     return MovingAverageStrategy(short_window=20, long_window=50)
 
@@ -128,14 +135,18 @@ def strategy() -> MovingAverageStrategy:
 @pytest.fixture(scope="module")
 def wf_result_504() -> BacktestResult:
     """
-    Cached walk_forward result for 504-day data with fixed MA(20,50) strategy.
+    Cached walk_forward result for 504-day data, MA strategy, zero friction.
 
     scope="module": computed once when the first test in a module requests it,
     then reused for all subsequent tests in that module. This eliminates ~15
     redundant walk_forward calls in test_walk_forward.py that all inspect
     properties of the same result.
 
-    Fixed MA windows: bypasses grid search so fit() is ~instant.
+    The strategy's (20, 50) constructor args are placeholders only - fit()
+    always runs the full grid search and overwrites them (~112 candidate
+    pairs, vectorised, well under a second on data this size). What actually
+    keeps this fast is N_PERMUTATIONS=200 (see module docstring) plus caching
+    this fixture at module scope rather than re-running it per test.
     Zero friction: synthetic data has only 'close', no high/low for slippage.
     Seed=42: deterministic bootstrap p-values across all test runs.
 
@@ -157,7 +168,7 @@ def wf_result_504() -> BacktestResult:
 @pytest.fixture(scope="module")
 def wf_result_756() -> BacktestResult:
     """
-    Cached walk_forward result for 756-day data with fixed MA(20,50) strategy.
+    Cached walk_forward result for 756-day data, MA strategy, zero friction.
 
     Same rationale as wf_result_504. 756 days produces two walk-forward
     windows, which is the minimum needed to test:

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from helpers import make_oscillating_data
 
-from backtesting_engine.benchmark import BenchmarkResult
+from backtesting_engine.benchmark import BenchmarkResult, compute_benchmark
 from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult, MetricsResult
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
@@ -43,7 +43,6 @@ _EXECUTION = ExecutionConfig(
     signal_delay=1,
 )
 
-
 @pytest.fixture(scope="module")
 def wf_result() -> BacktestResult:
     data = make_oscillating_data(756)
@@ -56,23 +55,18 @@ def wf_result() -> BacktestResult:
         bootstrap_seed=42,
     )
 
-
 @pytest.fixture(scope="module")
 def benchmark_result(wf_result: BacktestResult) -> BenchmarkResult:
-    from backtesting_engine.benchmark import compute_benchmark
     data = make_oscillating_data(756)
     return compute_benchmark(wf_result, data, execution=_ZERO_FRICTION)
-
 
 @pytest.fixture(scope="module")
 def single_run(wf_result: BacktestResult, benchmark_result: BenchmarkResult) -> list[RunEntry]:
     return [("Moving Average Crossover", wf_result, benchmark_result)]
 
-
 @pytest.fixture(scope="module")
 def single_run_no_benchmark(wf_result: BacktestResult) -> list[RunEntry]:
     return [("Moving Average Crossover", wf_result, None)]
-
 
 # ---------------------------------------------------------------------------
 # JSON tests
@@ -92,7 +86,7 @@ class TestWriteSummaryJson:
     def test_valid_json(self, tmp_path: Path, single_run: list[RunEntry]) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        data = json.loads(out.read_text())
+        data = json.loads(out.read_text(encoding="utf-8"))
         assert "runs" in data
         assert isinstance(data["runs"], list)
         assert len(data["runs"]) == 1
@@ -100,19 +94,19 @@ class TestWriteSummaryJson:
     def test_strategy_name_written(self, tmp_path: Path, single_run: list[RunEntry]) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["strategy"] == "Moving Average Crossover"
 
     def test_ticker_written(self, tmp_path: Path, single_run: list[RunEntry]) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out, ticker="SPY")
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["ticker"] == "SPY"
 
     def test_execution_fields_present(self, tmp_path: Path, single_run: list[RunEntry]) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out, execution=_EXECUTION)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["execution"]["transaction_cost_rate"] == pytest.approx(0.001)
         assert run["execution"]["slippage_factor"] == pytest.approx(0.05)
         assert run["execution"]["signal_delay"] == 1
@@ -122,7 +116,7 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         m = run["metrics"]
         expected_keys = {
             "sharpe_ratio", "sortino_ratio", "max_drawdown", "calmar_ratio",
@@ -139,7 +133,7 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["metrics"]["sharpe_ratio"] == pytest.approx(
             wf_result.summary_metrics.sharpe_ratio, rel=1e-6
         )
@@ -149,7 +143,7 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         b = run["benchmark"]
         assert b is not None
         assert "information_ratio" in b
@@ -161,7 +155,7 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run_no_benchmark, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["benchmark"] is None
 
     def test_nan_serialised_as_null(
@@ -171,7 +165,7 @@ class TestWriteSummaryJson:
         # or "NaN" (which would not be valid JSON and would fail json.loads).
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        raw = out.read_text()
+        raw = out.read_text(encoding="utf-8")
         # json.loads would already fail above if output were invalid JSON,
         # but check explicitly that the raw text has no bare nan tokens.
         assert "nan" not in raw.lower() or '"nan"' not in raw.lower()
@@ -202,15 +196,31 @@ class TestWriteSummaryJson:
         runs: list[RunEntry] = [("Test", result, None)]
         out = tmp_path / "inf_test.json"
         write_summary_json(runs, out)
-        data = json.loads(out.read_text())
+        data = json.loads(out.read_text(encoding="utf-8"))
         m = data["runs"][0]["metrics"]
         assert m["calmar_ratio"] == "Infinity"
         assert m["omega_ratio"] == "Infinity"
 
+    def test_default_json_writes_invalid_infinity_literal(self) -> None:
+        """Verify that Python's default json encoder writes bare 'Infinity' for inf.
+
+        bare 'Infinity' is not valid JSON per RFC 8259. This test pins the
+        exact behavior that makes _SummaryEncoder necessary: without it,
+        standard parsers (JavaScript JSON.parse, jq, etc.) would reject the output.
+        _SummaryEncoder intercepts inf before encoding and converts it to the
+        string "Infinity", which is valid JSON.
+        """
+        import json as stdlib_json
+        raw = stdlib_json.dumps({"v": float("inf")})
+        assert "Infinity" in raw
+        # The raw output is not valid per the JSON spec: external parsers
+        # will reject it. Demonstrate this is the problem _SummaryEncoder solves.
+        assert raw == '{"v": Infinity}'
+
     def test_empty_runs_list(self, tmp_path: Path) -> None:
         out = tmp_path / "empty.json"
         write_summary_json([], out)
-        data = json.loads(out.read_text())
+        data = json.loads(out.read_text(encoding="utf-8"))
         assert data == {"runs": []}
 
     def test_multiple_runs(
@@ -222,7 +232,7 @@ class TestWriteSummaryJson:
         ]
         out = tmp_path / "multi.json"
         write_summary_json(runs, out)
-        data = json.loads(out.read_text())
+        data = json.loads(out.read_text(encoding="utf-8"))
         assert len(data["runs"]) == 2
         assert data["runs"][0]["strategy"] == "MA Crossover"
         assert data["runs"][1]["strategy"] == "Momentum"
@@ -232,7 +242,7 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out)
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         windows = wf_result.valid_windows
         expected_start = str(windows[0].train_start.date())
         assert run["date_range"]["start"] == expected_start
@@ -242,10 +252,9 @@ class TestWriteSummaryJson:
     ) -> None:
         out = tmp_path / "summary.json"
         write_summary_json(single_run, out, date_range=("2000-01-01", "2020-12-31"))
-        run = json.loads(out.read_text())["runs"][0]
+        run = json.loads(out.read_text(encoding="utf-8"))["runs"][0]
         assert run["date_range"]["start"] == "2000-01-01"
         assert run["date_range"]["end"] == "2020-12-31"
-
 
 # ---------------------------------------------------------------------------
 # CSV tests
@@ -349,7 +358,7 @@ class TestWriteSummaryCsv:
         out = tmp_path / "empty.csv"
         write_summary_csv([], out)
         # Empty runs → no header, no rows (file may contain only a trailing newline)
-        assert out.read_text().strip() == ""
+        assert out.read_text(encoding="utf-8").strip() == ""
 
     def test_json_and_csv_sharpe_agree(
         self, tmp_path: Path, single_run: list[RunEntry]
@@ -359,7 +368,7 @@ class TestWriteSummaryCsv:
         write_summary_json(single_run, json_out)
         write_summary_csv(single_run, csv_out)
 
-        json_sharpe = json.loads(json_out.read_text())["runs"][0]["metrics"]["sharpe_ratio"]
+        json_sharpe = json.loads(json_out.read_text(encoding="utf-8"))["runs"][0]["metrics"]["sharpe_ratio"]
         csv_rows = list(csv.DictReader(csv_out.open(encoding="utf-8")))
         csv_sharpe = float(csv_rows[0]["metrics.sharpe_ratio"])
 

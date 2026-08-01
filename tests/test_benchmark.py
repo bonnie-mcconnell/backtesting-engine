@@ -8,6 +8,7 @@ Shared helpers (make_oscillating_data) come from helpers.py.
 """
 
 import math
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ from helpers import make_oscillating_data
 
 from backtesting_engine.benchmark import BenchmarkResult, _buy_and_hold_returns, compute_benchmark
 from backtesting_engine.config import TRANSACTION_COST_RATE
+from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.models import BacktestResult
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import walk_forward
@@ -31,7 +33,6 @@ def small_result() -> tuple[BacktestResult, pd.DataFrame]:
     # (which runs the MA grid search + bootstrap) executes once, not 8 times.
     data = make_oscillating_data(756, with_high_low=True)
     strategy = MovingAverageStrategy(short_window=20, long_window=50)
-    from backtesting_engine.execution import ExecutionConfig
     result = walk_forward(
         data, strategy,
         training_window_years=1, testing_window_years=1,
@@ -70,6 +71,25 @@ class TestBuyAndHoldReturns:
         prices = pd.Series([100.0])
         returns = _buy_and_hold_returns(prices)
         assert len(returns) == 0
+
+    def test_two_bar_window_applies_both_costs_to_single_return(self) -> None:
+        # When len(prices) == 2, returns has exactly one element.
+        # Both entry and exit costs are applied to that single element because
+        # returns[0] and returns[-1] refer to the same array element.
+        # Verify: buy at 100, sell at 110 → raw return 0.10.
+        # Entry cost: 0.001. Exit cost: 0.001. Net: 0.10 - 0.002 = 0.098.
+        # Without the 2-bar special handling this can silently double-count
+        # or miss a cost if the indexing logic changes.
+        prices = pd.DataFrame(
+            {"close": [100.0, 110.0], "high": [101.0, 111.0], "low": [99.0, 109.0]},
+            index=pd.date_range("2020-01-01", periods=2, freq="B"),
+        )
+        cost_rate = 0.001
+        returns = _buy_and_hold_returns(prices, cost_rate=cost_rate, slippage_factor=0.0)
+        assert len(returns) == 1
+        raw = (110.0 - 100.0) / 100.0
+        expected = raw - cost_rate - cost_rate  # entry + exit on the same bar
+        assert math.isclose(float(returns[0]), expected, rel_tol=1e-9)
 
     def test_costs_sum_to_two_transaction_cost_rates(self) -> None:
         # Entry + exit costs should total 2 × TRANSACTION_COST_RATE on a flat series.
@@ -125,22 +145,43 @@ class TestComputeBenchmark:
         assert math.isclose(beats_count, round(beats_count), abs_tol=1e-6)
 
     def test_zero_tracking_error_gives_zero_ir(self) -> None:
-        # If strategy Sharpe == benchmark Sharpe in every window, IR = 0.
-        # Construct a case where strategy is identical to buy-and-hold.
-        # We can't easily force this via walk_forward, so test the IR formula directly.
-        from backtesting_engine.benchmark import BenchmarkResult
-        # IR is 0 when sharpe_diffs is all zeros → tracking_error = 0 → IR clamped to 0
-        # (tested by inspecting _buy_and_hold_returns edge case above)
-        result = BenchmarkResult(
-            benchmark_sharpe=0.5,
-            benchmark_sortino=0.6,
-            benchmark_max_drawdown=-0.1,
-            information_ratio=0.0,
-            sharpe_diff_t_stat=0.0,
-            sharpe_diff_p_value=1.0,
-            strategy_beats_benchmark_fraction=0.5,
+        # When active_std < 1e-10 (strategy daily returns == BH daily returns),
+        # compute_benchmark must return ir=0.0, not raise ZeroDivisionError.
+        # We force this by: (a) setting strategy portfolio to flat (zero returns)
+        # and (b) patching _buy_and_hold_returns to return zeros, so
+        # active = strategy_returns - bh_returns = 0 - 0 = 0 everywhere.
+
+        data = make_oscillating_data(756, with_high_low=True)
+        result = walk_forward(
+            data,
+            MovingAverageStrategy(short_window=20, long_window=50),
+            training_window_years=1, testing_window_years=1,
+            execution=ExecutionConfig(slippage_factor=0.0, signal_delay=0),
         )
-        assert result.information_ratio == 0.0
+
+        for w in result.valid_windows:
+            idx = data.loc[w.test_start:w.test_end].index
+            w.simulation_result.portfolio_values = pd.Series(
+                np.ones(len(idx)) * 10_000.0, index=idx
+            )
+
+        with patch(
+            "backtesting_engine.benchmark._buy_and_hold_returns",
+            return_value=np.zeros(len(data.loc[
+                result.valid_windows[0].test_start:
+                result.valid_windows[0].test_end
+            ]) - 1),
+        ):
+            bm = compute_benchmark(
+                result, data,
+                execution=ExecutionConfig(
+                    transaction_cost_rate=0.0, slippage_factor=0.0, signal_delay=0
+                ),
+            )
+
+        assert bm.information_ratio == 0.0, (
+            f"Zero-tracking-error IR must be 0.0, got {bm.information_ratio}"
+        )
 
 
 def _make_mixed_window_data_for_flat_cash() -> pd.DataFrame:
@@ -169,10 +210,6 @@ def flat_cash_result():
     scope="class": the expensive MA grid search + bootstrap runs exactly once
     for the class, not once per test method.
     """
-    from backtesting_engine.execution import ExecutionConfig
-    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-    from backtesting_engine.walk_forward import walk_forward
-
     return walk_forward(
         _make_mixed_window_data_for_flat_cash(),
         MovingAverageStrategy(),
@@ -227,8 +264,6 @@ class TestRCFlatCashParity:
         it needs a different dataset (with high/low) to verify the property holds
         under a different data regime.
         """
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
         data = make_oscillating_data(756, with_high_low=True)
         result = walk_forward(
             data, MovingAverageStrategy(),
@@ -244,12 +279,8 @@ class TestRCFlatCashParity:
             assert 0.0 <= rc_p <= 1.0
 
 
-# ── 5. RC boundary carry-over parity ─────────────────────────────────────────
+# ── Flat-cash RC/Fisher parity ────────────────────────────────────────────────
 
-
-# ---------------------------------------------------------------------------
-# Slippage parity and per-window benchmark Sharpes
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="class")
 def slippage_parity_data():
@@ -260,10 +291,6 @@ def slippage_parity_data():
     result to call compute_benchmark on. Using a class-scoped fixture avoids
     running the full MA grid search once per test method.
     """
-    from backtesting_engine.execution import ExecutionConfig
-    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-    from backtesting_engine.walk_forward import walk_forward
-
     data = make_oscillating_data(756, with_high_low=True)
     exec_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.05, signal_delay=0)
     result = walk_forward(
@@ -283,8 +310,6 @@ class TestBenchmarkSlippageParity:
     """
 
     def test_slippage_reduces_benchmark_return(self) -> None:
-        from backtesting_engine.benchmark import _buy_and_hold_returns
-
         n = 50
         dates = pd.date_range("2020-01-01", periods=n, freq="B")
         close = np.array([100.0 + i * 0.1 for i in range(n)])
@@ -303,11 +328,10 @@ class TestBenchmarkSlippageParity:
             "Exit return should be lower with slippage"
         )
 
-    def test_zero_slippage_matches_old_series_api(self) -> None:
-        """With slippage_factor=0 and a plain Series input, result is the same
-        as the old API (backward compatibility)."""
-        from backtesting_engine.benchmark import _buy_and_hold_returns
-
+    def test_series_and_dataframe_inputs_produce_identical_returns(self) -> None:
+        """_buy_and_hold_returns accepts both a plain price Series and a DataFrame
+        with a 'close' column, and must produce identical results for the same prices.
+        """
         prices = pd.Series([100.0, 101.0, 102.0, 101.0, 103.0])
         returns_series = _buy_and_hold_returns(prices, cost_rate=0.001, slippage_factor=0.0)
 
@@ -319,9 +343,6 @@ class TestBenchmarkSlippageParity:
 
     def test_compute_benchmark_passes_slippage_to_bh(self, slippage_parity_data) -> None:
         """compute_benchmark must forward slippage from ExecutionConfig to BH returns."""
-        from backtesting_engine.benchmark import compute_benchmark
-        from backtesting_engine.execution import ExecutionConfig
-
         data, result, exec_slip = slippage_parity_data
         exec_no_slip = ExecutionConfig(transaction_cost_rate=0.001, slippage_factor=0.0, signal_delay=0)
 
@@ -339,18 +360,8 @@ class TestBenchmarkSlippageParity:
 
 @pytest.fixture(scope="class")
 def per_window_sharpe_result():
-    """
-    walk_forward + compute_benchmark result shared across TestBenchmarkResultPerWindowSharpes.
-
-    scope="class": runs once for all three tests in the class, not once per test.
-    The MA grid search runs on each call to walk_forward; sharing avoids 3×
-    redundant executions of the same computation.
-    """
+    """walk_forward + compute_benchmark result shared across TestBenchmarkResultPerWindowSharpes."""
     from backtesting_engine.benchmark import compute_benchmark
-    from backtesting_engine.execution import ExecutionConfig
-    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-    from backtesting_engine.walk_forward import walk_forward
-
     data = make_oscillating_data(756, with_high_low=True)
     result = walk_forward(
         data, MovingAverageStrategy(),
@@ -362,11 +373,8 @@ def per_window_sharpe_result():
 
 
 class TestBenchmarkResultPerWindowSharpes:
-    """BenchmarkResult must carry per_window_benchmark_sharpes.
-
-    All three tests share a single walk_forward result via the class-scoped
-    per_window_sharpe_result fixture. Without sharing, the MA grid search
-    ran independently for each test method.
+    """BenchmarkResult must carry per_window_benchmark_sharpes with one
+    entry per valid window, all finite, with mean equal to benchmark_sharpe.
     """
 
     def test_per_window_sharpes_populated(self, per_window_sharpe_result) -> None:
@@ -389,6 +397,3 @@ class TestBenchmarkResultPerWindowSharpes:
         _, bm = per_window_sharpe_result
         for i, s in enumerate(bm.per_window_benchmark_sharpes):
             assert math.isfinite(s), f"Window {i} benchmark Sharpe is not finite: {s}"
-
-
-# ── 8. Dashboard bar coloring uses per-window benchmark Sharpe ───────────────

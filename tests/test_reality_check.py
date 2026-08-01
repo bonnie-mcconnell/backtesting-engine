@@ -12,17 +12,18 @@ import pandas as pd
 import pytest
 from helpers import make_oscillating_data
 
+from backtesting_engine.execution import ExecutionConfig
 from backtesting_engine.reality_check import build_candidate_return_matrix, white_reality_check
+from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.walk_forward import walk_forward
 
 
 def _make_oscillating(n: int, with_high_low: bool = False) -> 'pd.DataFrame':
     return make_oscillating_data(n, with_high_low=with_high_low)
 
-
 def _constant_returns(mean: float, n: int, k: int, seed: int = 0) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return mean + rng.normal(0, 0.001, (n, k))
-
 
 class TestWhiteRealityCheck:
     def test_p_value_in_unit_interval(self) -> None:
@@ -73,9 +74,11 @@ class TestWhiteRealityCheck:
         returns_weak = rng.normal(0.0, 0.008, (500, 10))
         p_strong = white_reality_check(returns_strong, n_bootstrap=500)
         p_weak = white_reality_check(returns_weak, n_bootstrap=500)
-        # RC p for strong universe should be <= weak + tolerance
-        assert p_strong <= p_weak + 0.25
-
+        # One strong strategy should produce a lower RC p than an all-weak universe.
+        assert p_strong < p_weak + 0.05, (
+            f"Universe with strong strategy should have lower RC p than all-weak. "
+            f"Got p_strong={p_strong:.3f}, p_weak={p_weak:.3f}."
+        )
 
 class TestBuildCandidateReturnMatrix:
     def test_correct_shape(self) -> None:
@@ -102,7 +105,6 @@ class TestBuildCandidateReturnMatrix:
         w2 = {(30, 150): rng.normal(0, 0.01, 100)}
         with pytest.raises(ValueError, match="No parameter pair"):
             build_candidate_return_matrix([w1, w2])
-
 
 class TestRealityCheckCentering:
     def test_single_zero_mean_strategy_p_in_reasonable_range(self) -> None:
@@ -141,7 +143,7 @@ class TestRealityCheckCentering:
         null = rng.normal(0.0, 0.01, (800, 20))
         p_strong = white_reality_check(strong, n_bootstrap=2000, seed=0)
         p_null = white_reality_check(null, n_bootstrap=2000, seed=0)
-        assert p_strong < p_null + 0.15, (
+        assert p_strong < p_null, (
             f"Strong alpha should lower RC p-value. Got p_strong={p_strong:.3f}, "
             f"p_null={p_null:.3f}."
         )
@@ -158,7 +160,6 @@ class TestRealityCheckCentering:
         assert p > 0.02, (
             f"Zero-mean strategy should not be near-rejected, got p={p:.4f}"
         )
-
 
 class TestBenchmarkRelativeRC:
     """
@@ -207,15 +208,15 @@ class TestBenchmarkRelativeRC:
         # identically zero. The RC null (active mean = 0) is exactly satisfied,
         # so p_bh should be large (we cannot reject the null).
         rng = np.random.default_rng(42)
-        benchmark = rng.normal(0.001, 0.01, 500)
-        # All candidates are the benchmark plus tiny noise - active returns near zero
+        benchmark = rng.normal(0.001, 0.01, 1000)
+        # All candidates are the benchmark plus negligible noise - active returns ~0
         candidates = np.column_stack([
-            benchmark + rng.normal(0, 1e-6, 500) for _ in range(5)
+            benchmark + rng.normal(0, 1e-6, 1000) for _ in range(5)
         ])
         p_bh = white_reality_check(
-            candidates, n_bootstrap=800, seed=0, benchmark_returns=benchmark
+            candidates, n_bootstrap=1000, seed=0, benchmark_returns=benchmark
         )
-        assert p_bh > 0.20, (
+        assert p_bh > 0.30, (
             f"Candidates matching B&H exactly should not reject BH null. Got p={p_bh:.3f}."
         )
 
@@ -231,7 +232,7 @@ class TestBenchmarkRelativeRC:
         p_bh = white_reality_check(
             candidates, n_bootstrap=1000, seed=0, benchmark_returns=benchmark
         )
-        assert p_bh < 0.20, (
+        assert p_bh < 0.05, (
             f"Strong alpha vs B&H should produce low BH-null p. Got p={p_bh:.3f}."
         )
 
@@ -261,7 +262,6 @@ class TestBenchmarkRelativeRC:
         p_2d = white_reality_check(candidates, n_bootstrap=300, seed=1, benchmark_returns=benchmark_2d)
         assert p_1d == p_2d
 
-
 # ── Flat-cash parity ──────────────────────────────────────────────────────────
 
 def _make_mixed_window_data_for_flat_cash() -> pd.DataFrame:
@@ -289,10 +289,6 @@ def flat_cash_result():
     scope="class": the expensive MA grid search + bootstrap runs exactly once
     for the class, not once per test method.
     """
-    from backtesting_engine.execution import ExecutionConfig
-    from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-    from backtesting_engine.walk_forward import walk_forward
-
     return walk_forward(
         _make_mixed_window_data_for_flat_cash(),
         MovingAverageStrategy(),
@@ -346,10 +342,6 @@ class TestRCFlatCashParity:
         it needs a different dataset (with high/low) to verify the property holds
         under a different data regime.
         """
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
         data = _make_oscillating(756, with_high_low=True)
         result = walk_forward(
             data, MovingAverageStrategy(),
@@ -364,12 +356,10 @@ class TestRCFlatCashParity:
         if not math.isnan(rc_p):
             assert 0.0 <= rc_p <= 1.0
 
-
 class TestBuildCandidateReturnMatrixKeyTypes:
     """build_candidate_return_matrix must accept int keys (Momentum) and tuple keys (MA)."""
 
     def test_tuple_keys_work(self) -> None:
-        from backtesting_engine.reality_check import build_candidate_return_matrix
         rng = np.random.default_rng(0)
         window1 = {(10, 50): rng.normal(0, 0.01, 100), (20, 50): rng.normal(0, 0.01, 100)}
         window2 = {(10, 50): rng.normal(0, 0.01, 100), (20, 50): rng.normal(0, 0.01, 100)}
@@ -378,7 +368,6 @@ class TestBuildCandidateReturnMatrixKeyTypes:
 
     def test_int_keys_work(self) -> None:
         """Momentum strategy uses int keys - must not raise TypeError."""
-        from backtesting_engine.reality_check import build_candidate_return_matrix
         rng = np.random.default_rng(1)
         window1 = {20: rng.normal(0, 0.01, 100), 60: rng.normal(0, 0.01, 100)}
         window2 = {20: rng.normal(0, 0.01, 100), 60: rng.normal(0, 0.01, 100)}
@@ -386,7 +375,6 @@ class TestBuildCandidateReturnMatrixKeyTypes:
         assert matrix.shape == (200, 2)
 
     def test_partial_key_overlap_uses_intersection(self) -> None:
-        from backtesting_engine.reality_check import build_candidate_return_matrix
         rng = np.random.default_rng(2)
         window1 = {20: rng.normal(0, 0.01, 50), 60: rng.normal(0, 0.01, 50), 120: rng.normal(0, 0.01, 50)}
         window2 = {20: rng.normal(0, 0.01, 50), 60: rng.normal(0, 0.01, 50)}  # 120 missing

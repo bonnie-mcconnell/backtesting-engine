@@ -77,8 +77,7 @@ class TestExposureFraction:
         pv = _trending_pv()
         trade = _trade("2020-01-02", "2020-01-15", pnl=10.0)
         exposure, *_ = _trade_diagnostics(pv, trades=[trade])
-        if not math.isnan(exposure):
-            assert 0.0 <= exposure <= 1.0
+        assert 0.0 <= exposure <= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +208,35 @@ class TestDiagnosticsIntegration:
         # trades=[] means strategy ran but made no trades → exposure = 0
         assert result.exposure_fraction == 0.0
         assert result.trade_count == 0
+
+
+class TestExposureScaling:
+    """
+    Verify that the vectorised exposure calculation scales correctly with many
+    overlapping and non-overlapping trades. These cases are where the old
+    O(n × n_trades) set approach and the new event-log approach must agree.
+    """
+
+    def test_many_non_overlapping_trades_exposure(self) -> None:
+        """10 non-overlapping 2-bar trades out of 100 bars = 20/100 = 0.20."""
+        dates = _ts(100)
+        pv = pd.Series([10_000.0] * 100, index=dates, dtype=float)
+        trades = [
+            _trade(str(dates[i].date()), str(dates[i + 1].date()), pnl=10.0)
+            for i in range(0, 20, 2)  # 10 trades, each 2 bars apart
+        ]
+        exposure, *_ = _trade_diagnostics(pv, trades=trades)
+        assert math.isclose(exposure, 20 / 100, rel_tol=1e-6), (
+            f"Expected 0.20, got {exposure}"
+        )
+
+    def test_full_window_trade_gives_exposure_one(self) -> None:
+        """A single trade spanning the entire window → exposure = 1.0."""
+        n = 50
+        dates = _ts(n)
+        pv = pd.Series([10_000.0] * n, index=dates, dtype=float)
+        trade = _trade(str(dates[0].date()), str(dates[-1].date()), pnl=100.0)
+        exposure, *_ = _trade_diagnostics(pv, trades=[trade])
+        assert math.isclose(exposure, 1.0, rel_tol=1e-6), (
+            f"Expected 1.0, got {exposure}"
+        )

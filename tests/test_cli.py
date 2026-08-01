@@ -16,9 +16,31 @@ import re
 import tokenize
 from unittest.mock import patch
 
+import numpy as np
+import pandas as pd
 import pytest
+from helpers import make_oscillating_data
 
-from backtesting_engine.main import _parse_args
+import backtesting_engine.main as _main_module
+from backtesting_engine.config import (
+    ANNUALISATION_FACTOR,
+    START_DATE,
+    TESTING_WINDOW_YEARS,
+    TICKER,
+    TRAINING_WINDOW_YEARS,
+)
+from backtesting_engine.execution import ExecutionConfig
+from backtesting_engine.main import (
+    _fmt_metric,
+    _make_demo_data,
+    _min_rows,
+    _parse_args,
+    _print_comparison,
+    main,
+)
+from backtesting_engine.models import BacktestResult, MetricsResult
+from backtesting_engine.multi_asset import _parse_args as _multi_parse_args
+from backtesting_engine.multi_asset import run_multi_asset
 
 
 class TestCLIDefaults:
@@ -33,20 +55,18 @@ class TestCLIDefaults:
         assert args.costs_only is False
 
     def test_default_ticker(self) -> None:
-        from backtesting_engine.config import TICKER
         with patch("sys.argv", ["backtesting-engine"]):
             args = _parse_args()
         assert args.ticker == TICKER
 
     def test_default_start(self) -> None:
-        from backtesting_engine.config import START_DATE
         with patch("sys.argv", ["backtesting-engine"]):
             args = _parse_args()
         assert args.start == START_DATE
 
     def test_default_no_cache_is_false(self) -> None:
         with patch("sys.argv", ["backtesting-engine"]):
-            args = _parse_args()
+            args = _multi_parse_args()
         assert args.no_cache is False
 
     def test_default_end_is_none(self) -> None:
@@ -72,13 +92,11 @@ class TestCLIDefaults:
         assert args.delay == 1
 
     def test_default_train_years(self) -> None:
-        from backtesting_engine.config import TRAINING_WINDOW_YEARS
         with patch("sys.argv", ["backtesting-engine"]):
             args = _parse_args()
         assert args.train_years == TRAINING_WINDOW_YEARS
 
     def test_default_test_years(self) -> None:
-        from backtesting_engine.config import TESTING_WINDOW_YEARS
         with patch("sys.argv", ["backtesting-engine"]):
             args = _parse_args()
         assert args.test_years == TESTING_WINDOW_YEARS
@@ -93,7 +111,6 @@ class TestCLIDefaults:
         with patch("sys.argv", ["backtesting-engine"]):
             args = _parse_args()
         assert args.output_dir == "."
-
 
 class TestCLIStrategyFlag:
     def test_strategy_ma(self) -> None:
@@ -121,13 +138,11 @@ class TestCLIStrategyFlag:
             with pytest.raises(SystemExit):
                 _parse_args()
 
-
 class TestCLICostsOnly:
     def test_costs_only_flag(self) -> None:
         with patch("sys.argv", ["backtesting-engine", "--costs-only"]):
             args = _parse_args()
         assert args.costs_only is True
-
 
 class TestCLICustomData:
     def test_custom_ticker(self) -> None:
@@ -142,9 +157,8 @@ class TestCLICustomData:
 
     def test_no_cache_flag(self) -> None:
         with patch("sys.argv", ["backtesting-engine", "--no-cache"]):
-            args = _parse_args()
+            args = _multi_parse_args()
         assert args.no_cache is True
-
 
 class TestCLINewFlags:
     """
@@ -235,12 +249,9 @@ class TestCLINewFlags:
         assert args.seed == 7
         assert args.output_dir == "/tmp/out"
 
-
-
 # ---------------------------------------------------------------------------
 
 # CLI correctness: _fmt_metric, _min_rows, --end date, encoding
-
 
 # ---------------------------------------------------------------------------
 
@@ -248,7 +259,6 @@ class TestFmtMetric:
     """_fmt_metric must never raise ValueError by passing ∞ as a format spec."""
 
     def _fmt(self, v: float) -> str:
-        from backtesting_engine.main import _fmt_metric
         return _fmt_metric(v)
 
     def test_normal_float_formats(self) -> None:
@@ -267,24 +277,17 @@ class TestFmtMetric:
         assert result
 
     def test_inf_result_is_not_raw_format_specifier(self) -> None:
-        # The old bug: _fmt_metric(v, "∞") tried format(v, "∞") → ValueError.
-        # Verify the returned string is a display value, not the raw symbol.
+        # The returned string must be a human-readable display value,
+        # not a Python error message or a raw format specifier character.
         result = self._fmt(float("inf"))
-        # Should not look like Python tried to use ∞ as a format spec error message.
         assert "format" not in result.lower()
         assert "unknown" not in result.lower()
 
     def test_comparison_table_does_not_crash(self) -> None:
-        """The comparative summary crashed when best3() called _fmt_metric(v, '∞').
-        Simulate the all-inf case that triggered it."""
-        from backtesting_engine.main import _fmt_metric
-        # This is exactly the call that previously caused ValueError.
-        # Previously: _fmt_metric(float("inf"), "∞") → crash.
-        # Now: _fmt_metric(float("inf")) → returns a safe display string.
+        """_fmt_metric must handle float('inf') without raising ValueError."""
         result = _fmt_metric(float("inf"))
         assert isinstance(result, str)
         assert len(result) > 0
-
 
 # ── 2. _min_rows uses runtime args ────────────────────────────────────────────
 
@@ -292,29 +295,19 @@ class TestMinRows:
     """_min_rows must reflect CLI --train-years / --test-years, not config defaults."""
 
     def test_default_args_produce_expected_minimum(self) -> None:
-        from backtesting_engine.config import (
-            ANNUALISATION_FACTOR,
-            MOVING_AVERAGE_LONG_DAYS,
-            TESTING_WINDOW_YEARS,
-            TRAINING_WINDOW_YEARS,
-        )
-        from backtesting_engine.main import _min_rows
-        expected = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * ANNUALISATION_FACTOR + MOVING_AVERAGE_LONG_DAYS
+        expected = (TRAINING_WINDOW_YEARS + TESTING_WINDOW_YEARS) * ANNUALISATION_FACTOR
         assert _min_rows(TRAINING_WINDOW_YEARS, TESTING_WINDOW_YEARS) == expected
 
     def test_longer_windows_require_more_rows(self) -> None:
-        from backtesting_engine.main import _min_rows
         assert _min_rows(5, 2) > _min_rows(3, 1)
 
     def test_function_exists_and_module_level_constant_removed(self) -> None:
-        """_MIN_ROWS module-level constant must be gone; _min_rows function takes args."""
-        import backtesting_engine.main as m
-        assert not hasattr(m, "_MIN_ROWS"), (
-            "_MIN_ROWS module-level constant should be removed. "
+        """_min_rows must be a callable taking (train_years, test_years), not a constant."""
+        assert not hasattr(_main_module, "_MIN_ROWS"), (
+            "_MIN_ROWS must not exist as a module-level constant. "
             "Use _min_rows(train_years, test_years) instead."
         )
-        assert callable(m._min_rows)
-
+        assert callable(_min_rows)
 
 # ── 3. --end inclusive (yfinance offset) ─────────────────────────────────────
 
@@ -333,13 +326,10 @@ class TestEndDateInclusive:
         # The logic in _load: yf_end = None when end_date is None.
         # We test the main module compiles and the logic is correct by inspection.
 
-        import backtesting_engine.main as m
-
-        src = inspect.getsource(m._load)
+        src = inspect.getsource(_main_module._load)
         # Must only apply the timedelta when end_date is not None.
         assert "if end_date is not None" in src
         assert "timedelta(days=1)" in src
-
 
 # ---------------------------------------------------------------------------
 # Source file encoding portability
@@ -352,16 +342,18 @@ class TestSourceFileEncoding:
     On Windows, Path.read_text() defaults to cp1252 which cannot decode these.
     """
 
-    _SRC_FILES = [
-        "tests/test_strategy.py",
-        "tests/test_cli.py",
-        "tests/test_benchmark.py",
-    ]
-
     def test_all_read_text_calls_specify_encoding(self) -> None:
         """Every .read_text() call in test code must pass encoding='utf-8'.
 
         Uses tokenize to inspect actual call sites, not docstring prose.
+
+        Scans every tests/*.py file (glob, not a hand-maintained list) - a
+        hardcoded list previously missed test_integration.py and
+        test_summary.py, the latter with 16 undetected violations, simply
+        because nobody had added them to the list when those files were
+        written. Discovering files automatically means a new test file with
+        an un-encoded read_text() call gets caught the first time CI runs
+        on it, not whenever someone happens to remember to add it here.
         """
         tok = tokenize
 
@@ -370,10 +362,11 @@ class TestSourceFileEncoding:
         call_re = re.compile(r'[\w)]\.read_text\(\s*\)')
         violations = []
 
-        for rel_path in self._SRC_FILES:
-            fpath = repo_root / rel_path
-            if not fpath.exists():
-                continue
+        test_files = sorted((repo_root / "tests").glob("*.py"))
+        assert test_files, "Glob found no test files - check the path."
+
+        for fpath in test_files:
+            rel_path = fpath.relative_to(repo_root)
             src = fpath.read_text(encoding="utf-8")
             lines = src.splitlines()
 
@@ -417,7 +410,6 @@ class TestSourceFileEncoding:
                 failures.append(f"{pyfile.relative_to(repo_root)}: {e}")
         assert not failures, "Files with invalid UTF-8:\n" + "\n".join(failures)
 
-
 # ---------------------------------------------------------------------------
 # --no-dashboard and --workers flags
 # ---------------------------------------------------------------------------
@@ -430,27 +422,20 @@ class TestNoDashboardFlag:
 
     def test_no_dashboard_default_is_false(self) -> None:
         # Parse with minimal required args - no_dashboard must default to False.
-        from backtesting_engine.main import _parse_args as _main_parse
         with patch("sys.argv", ["backtesting-engine", "--ticker", "SPY",
                                  "--start", "2010-01-01"]):
-            args = _main_parse()
+            args = _parse_args()
         assert args.no_dashboard is False
 
     def test_workers_default_is_one_via_parse(self) -> None:
-        from backtesting_engine.main import _parse_args as _main_parse
         with patch("sys.argv", ["backtesting-engine", "--ticker", "SPY",
                                  "--start", "2010-01-01"]):
-            args = _main_parse()
+            args = _parse_args()
         assert args.workers == 1
 
     def test_no_dashboard_suppresses_build_dashboard(self) -> None:
         """When --no-dashboard is set, build_dashboard must not be called."""
         from unittest.mock import patch as upatch
-
-        import numpy as np
-        import pandas as pd
-
-        from backtesting_engine.main import main
 
         dates = pd.date_range("1993-01-01", periods=2268, freq="B")
         close = 100 * np.cumprod(1 + np.random.default_rng(0).normal(0.0003, 0.01, 2268))
@@ -490,11 +475,6 @@ class TestNoDashboardFlag:
         from pathlib import Path
         from unittest.mock import patch as upatch
 
-        from helpers import make_oscillating_data
-
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.multi_asset import run_multi_asset
-
         build_calls = []
 
         def mock_build(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -527,11 +507,6 @@ class TestNoDashboardFlag:
         from pathlib import Path
         from unittest.mock import patch as upatch
 
-        from helpers import make_oscillating_data
-
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.multi_asset import run_multi_asset
-
         build_calls = []
 
         def mock_build(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -559,7 +534,6 @@ class TestNoDashboardFlag:
             f"Expected 1 build_dashboard call, got {len(build_calls)}"
         )
 
-
 # ── _print_comparison: max drawdown checkmark ─────────────────────────────
 
 class TestPrintComparisonMaxDrawdown:
@@ -569,7 +543,6 @@ class TestPrintComparisonMaxDrawdown:
     """
 
     def _result(self, max_drawdown: float):
-        from backtesting_engine.models import BacktestResult, MetricsResult
         metrics = MetricsResult(
             sharpe_ratio=1.0,
             sortino_ratio=1.0,
@@ -586,8 +559,6 @@ class TestPrintComparisonMaxDrawdown:
         )
 
     def test_smallest_drawdown_gets_checkmark(self, capsys: "pytest.CaptureFixture[str]") -> None:
-        from backtesting_engine.main import _print_comparison
-
         ma = self._result(-0.30)
         kalman = self._result(-0.10)  # closest to zero - smallest drawdown, should get the checkmark
         momentum = self._result(-0.40)
@@ -603,8 +574,6 @@ class TestPrintComparisonMaxDrawdown:
         assert "10.00% \u2713" in dd_line
 
     def test_drawdown_shown_as_percentage(self, capsys: "pytest.CaptureFixture[str]") -> None:
-        from backtesting_engine.main import _print_comparison
-
         ma = self._result(-0.314)
         kalman = self._result(-0.20)
         momentum = self._result(-0.50)
@@ -616,3 +585,81 @@ class TestPrintComparisonMaxDrawdown:
         # Must be percentage-formatted (-31.40%), not raw decimal (-0.314).
         assert "31.40%" in dd_line
         assert "-0.314" not in dd_line
+
+
+class TestMakeDemoData:
+    """Unit tests for _make_demo_data, which generates synthetic OHLCV data."""
+
+    def test_returns_dataframe_with_correct_columns(self) -> None:
+        data = _make_demo_data()
+        assert set(data.columns) >= {"close", "high", "low"}
+
+    def test_datetime_index(self) -> None:
+        data = _make_demo_data()
+        assert isinstance(data.index, pd.DatetimeIndex)
+
+    def test_close_within_high_low_band(self) -> None:
+        data = _make_demo_data()
+        assert (data["close"] >= data["low"]).all(), "close must be >= low"
+        assert (data["close"] <= data["high"]).all(), "close must be <= high"
+
+    def test_all_prices_strictly_positive(self) -> None:
+        data = _make_demo_data()
+        assert (data["close"] > 0).all()
+        assert (data["high"] > 0).all()
+        assert (data["low"] > 0).all()
+
+    def test_length_at_least_32_years(self) -> None:
+        from backtesting_engine.config import ANNUALISATION_FACTOR
+        data = _make_demo_data()
+        assert len(data) >= 32 * ANNUALISATION_FACTOR
+
+    def test_enough_bars_for_default_windows(self) -> None:
+        """Must produce enough bars for at least one 3yr/1yr walk-forward window."""
+        from backtesting_engine.config import ANNUALISATION_FACTOR
+        data = _make_demo_data(train_years=3, test_years=1)
+        assert len(data) >= (3 + 1) * ANNUALISATION_FACTOR
+
+    def test_seed_reproducible(self) -> None:
+        d1 = _make_demo_data(seed=42)
+        d2 = _make_demo_data(seed=42)
+        assert (d1["close"].values == d2["close"].values).all()
+
+    def test_different_seeds_produce_different_data(self) -> None:
+        d1 = _make_demo_data(seed=0)
+        d2 = _make_demo_data(seed=1)
+        assert not (d1["close"].values == d2["close"].values).all()
+
+    def test_index_is_monotonic(self) -> None:
+        data = _make_demo_data()
+        assert data.index.is_monotonic_increasing
+
+    def test_no_missing_values(self) -> None:
+        data = _make_demo_data()
+        assert not data.isnull().any().any()
+
+    def test_demo_flag_parses(self) -> None:
+        """--demo must be a recognised CLI flag."""
+        import sys
+        old = sys.argv
+        sys.argv = ["backtesting-engine", "--demo"]
+        try:
+            args = _parse_args()
+            assert args.demo is True
+        finally:
+            sys.argv = old
+
+    def test_demo_flag_off_by_default(self) -> None:
+        import sys
+        old = sys.argv
+        sys.argv = ["backtesting-engine"]
+        try:
+            args = _parse_args()
+            assert args.demo is False
+        finally:
+            sys.argv = old
+
+    def test_demo_data_passes_validate_data(self) -> None:
+        from backtesting_engine.data.validator import validate_data
+        data = _make_demo_data()
+        validate_data(data, min_rows=1008)

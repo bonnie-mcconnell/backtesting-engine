@@ -27,6 +27,7 @@ Shared fixtures (wf_result_504, wf_result_756, oscillating_504, strategy) are
 defined in conftest.py and auto-injected by pytest - no import required.
 """
 
+import inspect
 import math
 import warnings
 
@@ -35,18 +36,28 @@ import pandas as pd
 import pytest
 from helpers import make_oscillating_data
 
+import backtesting_engine.walk_forward as _wf_module
+from backtesting_engine.config import INITIAL_PORTFOLIO_VALUE
 from backtesting_engine.execution import ExecutionConfig
-from backtesting_engine.models import BacktestResult
+from backtesting_engine.metrics import _calmar
+from backtesting_engine.models import (
+    BacktestResult,
+    MetricsResult,
+    SimulationResult,
+    Trade,
+    WindowResult,
+)
+from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
 from backtesting_engine.strategy.moving_average import MovingAverageStrategy
 from backtesting_engine.walk_forward import (
     _fisher_combined_p,
     _flat_cash_metrics,
+    _stitch_benchmark_returns,
     walk_forward,
 )
 
 # Zero-friction config for unit tests using close-only synthetic data.
 _ZERO_FRICTION = ExecutionConfig(slippage_factor=0.0, signal_delay=0)
-
 
 # ── Window structure ──────────────────────────────────────────────────────────
 
@@ -66,7 +77,6 @@ class TestWindowCount:
                 training_window_years=1, testing_window_years=1,
                 execution=_ZERO_FRICTION,
             )
-
 
 # ── Look-ahead bias ───────────────────────────────────────────────────────────
 
@@ -90,7 +100,6 @@ class TestNoLookaheadBias:
         for w in wf_result_756.valid_windows:
             assert w.test_start > w.train_end
 
-
 # ── Window advancement ────────────────────────────────────────────────────────
 
 class TestWindowAdvancement:
@@ -109,7 +118,6 @@ class TestWindowAdvancement:
             f"Window 1 test_start={valid[1].test_start} should be "
             f"1 BDay after window 0 test_end={valid[0].test_end}"
         )
-
 
 # ── BacktestResult properties ─────────────────────────────────────────────────
 
@@ -146,7 +154,6 @@ class TestBacktestResult:
         p = wf_result_504.summary_metrics.combined_p_value
         assert 0.0 <= p <= 1.0, f"combined_p_value={p} not in [0, 1]"
 
-
 # ── Fisher combined p ─────────────────────────────────────────────────────────
 
 class TestFisherCombinedP:
@@ -174,7 +181,6 @@ class TestFisherCombinedP:
         p16 = _fisher_combined_p([0.1] * 16)
         assert p16 < p4
 
-
 # ── Flat-cash window semantics ────────────────────────────────────────────────
 
 class TestFlatCashMetrics:
@@ -185,7 +191,9 @@ class TestFlatCashMetrics:
       - Sharpe=0.0 (not nan): nan propagates incorrectly through np.nanmean
       - Sortino=0.0 (not inf): inf is silently excluded from nanmean,
         overstating aggregate Sortino
-      - Omega=1.0 (not inf): same silent exclusion problem
+      - Omega=NaN: zero-return series has no gains or losses to ratio over;
+        NaN is excluded from mean_metric, so flat-cash windows don't bias
+        the aggregate omega (using 1.0 would fabricate a value)
       - p_value=1.0: no evidence of skill in a flat-cash window
       - max_drawdown=0.0: cash has no drawdown by definition
 
@@ -212,11 +220,11 @@ class TestFlatCashMetrics:
         assert m.sortino_ratio == 0.0
         assert math.isfinite(m.sortino_ratio)
 
-    def test_omega_is_one_not_inf(self) -> None:
+    def test_omega_is_nan(self) -> None:
+        # A zero-return series has no gains or losses to omega-ratio over.
+        # NaN is semantically correct; 1.0 would be fabricated.
         m = _flat_cash_metrics()
-        assert m.omega_ratio == 1.0
-        assert math.isfinite(m.omega_ratio)
-
+        assert math.isnan(m.omega_ratio)
 
 # ── Active parameter storage ──────────────────────────────────────────────────
 
@@ -249,7 +257,6 @@ class TestActiveParamsStorage:
         for p in wf_result_504.param_evolution:
             assert "short_window" in p
 
-
 # ── Reality Check integration ─────────────────────────────────────────────────
 
 class TestRealityCheckWithTestReturns:
@@ -270,7 +277,6 @@ class TestRealityCheckWithTestReturns:
         self, oscillating_504: pd.DataFrame
     ) -> None:
         """Kalman has no candidate grid → RC is undefined → must be NaN, not crash."""
-        from backtesting_engine.strategy.kalman_filter import KalmanFilterStrategy
         result = walk_forward(
             oscillating_504, KalmanFilterStrategy(),
             training_window_years=1, testing_window_years=1,
@@ -297,7 +303,6 @@ class TestRealityCheckWithTestReturns:
             r1.summary_metrics.reality_check_p_value
             == r2.summary_metrics.reality_check_p_value
         )
-
 
 # ── Summary metric aggregation ────────────────────────────────────────────────
 
@@ -330,7 +335,6 @@ class TestSummaryMetricAggregation:
     ) -> None:
         valid = wf_result_756.valid_windows
         assert valid
-        from backtesting_engine.metrics import _calmar
         all_rets = []
         for w in valid:
             pv = w.simulation_result.portfolio_values
@@ -349,6 +353,90 @@ class TestSummaryMetricAggregation:
         expected = float(np.mean(per_sharpes))
         assert abs(wf_result_756.summary_metrics.sharpe_ratio - expected) < 1e-8
 
+@pytest.fixture(scope="class")
+def trending_result() -> BacktestResult:
+    """Strong, steady uptrend so MA stays long across window boundaries,
+    guaranteeing at least one carry-over buy at test bar 0. Shared across
+    TestCalmarStitchingBarZeroExclusion's methods - a single walk_forward()
+    call rather than one per test."""
+    n = 1200
+    dates = pd.date_range("2000-01-01", periods=n, freq="B")
+    close = 100 * np.exp(np.cumsum(np.full(n, 0.0015)))
+    data = pd.DataFrame({"close": close}, index=dates)
+    return walk_forward(
+        data, MovingAverageStrategy(),
+        training_window_years=2, testing_window_years=1,
+        execution=ExecutionConfig(
+            transaction_cost_rate=0.001, slippage_factor=0.0, signal_delay=0
+        ),
+    )
+
+class TestCalmarStitchingBarZeroExclusion:
+    """
+    _calmar_from_stitched concatenates pct_change().dropna() per window, which
+    drops bar 0 of every window (there's no prior bar within that window's own
+    series to diff against). Most windows don't trade on bar 0, so this is
+    invisible. But when MA's boundary carry-over fires (golden cross during the
+    training tail, position still open at the test/train boundary), the
+    strategy DOES buy on bar 0 - and that entry's transaction cost is excluded
+    from the stitched return series feeding Calmar, identically to how it's
+    excluded from that window's own Sharpe/Sortino/p-value in calculate_metrics().
+    This documents the mechanism precisely so it can't silently regress.
+    """
+
+    def test_scenario_actually_triggers_carry_over(
+        self, trending_result: BacktestResult
+    ) -> None:
+        """Guard against this test silently becoming vacuous if the scenario
+        or carry-over logic changes such that no window opens on bar 0."""
+
+        bar0_trade_windows = [
+            w for w in trending_result.valid_windows
+            if abs(w.simulation_result.portfolio_values.iloc[0] - INITIAL_PORTFOLIO_VALUE) > 1e-6
+        ]
+        assert bar0_trade_windows, (
+            "Scenario must produce at least one window with a bar-0 carry-over "
+            "trade, or the exclusion test below isn't actually exercising it."
+        )
+
+    def test_stitched_array_drops_exactly_one_bar_per_window(
+        self, trending_result: BacktestResult
+    ) -> None:
+        """Confirms the actual mechanism: len(stitched) == sum(len(pv) - 1),
+        i.e. every window loses exactly its bar-0 return, whether or not a
+        carry-over trade happened there."""
+        valid = trending_result.valid_windows
+        all_rets = []
+        expected_len = 0
+        for w in valid:
+            pv = w.simulation_result.portfolio_values
+            assert pv is not None and len(pv) > 1
+            all_rets.append(pv.pct_change().dropna().to_numpy())
+            expected_len += len(pv) - 1
+
+        stitched = np.concatenate(all_rets)
+        assert len(stitched) == expected_len
+
+    def test_bar_zero_entry_cost_not_in_stitched_series(
+        self, trending_result: BacktestResult
+    ) -> None:
+        """For the window with a bar-0 carry-over trade, the cost reflected in
+        pv.iloc[0] (vs INITIAL_PORTFOLIO_VALUE) must not appear anywhere in
+        the stitched return series used for Calmar."""
+
+        carry_over_window = next(
+            w for w in trending_result.valid_windows
+            if abs(w.simulation_result.portfolio_values.iloc[0] - INITIAL_PORTFOLIO_VALUE) > 1e-6
+        )
+        pv = carry_over_window.simulation_result.portfolio_values
+        dropped_return = pv.iloc[0] / INITIAL_PORTFOLIO_VALUE - 1.0
+        assert abs(dropped_return) > 1e-5, "Bar-0 entry cost should be non-trivial."
+
+        rets = pv.pct_change().dropna().to_numpy()
+        assert not np.any(np.isclose(rets, dropped_return, atol=1e-9)), (
+            "The dropped bar-0 entry-cost return should not reappear anywhere "
+            "in the window's own stitched return series."
+        )
 
 # ── Input validation ──────────────────────────────────────────────────────────
 
@@ -391,14 +479,12 @@ class TestWalkForwardInputValidation:
         except ValueError as e:
             pytest.fail(f"Valid years raised ValueError: {e}")
 
-
 # ── WindowResult deprecation, _extract_active_params removal ─────────────────
 
 class TestWindowResultDeprecationWarning:
     """WindowResult.skipped=True must fire a DeprecationWarning."""
 
     def _make_window_result(self, skipped: bool) -> object:
-        from backtesting_engine.models import MetricsResult, SimulationResult, WindowResult
         sim = SimulationResult(trades=[])
         m = MetricsResult(
             sharpe_ratio=0.0, sortino_ratio=0.0, max_drawdown=0.0,
@@ -454,11 +540,100 @@ class TestExtractActiveParamsRemoved:
     """
 
     def test_extract_active_params_not_in_walk_forward_module(self) -> None:
-        import inspect
-
-        import backtesting_engine.walk_forward as wf
-        members = [name for name, _ in inspect.getmembers(wf)]
+        members = [name for name, _ in inspect.getmembers(_wf_module)]
         assert "_extract_active_params" not in members, (
             "_extract_active_params must not exist in walk_forward - "
             "the orchestrator calls strategy.active_params() directly."
+        )
+
+class TestStitchBenchmarkReturnsFlatCash:
+    """
+    _stitch_benchmark_returns must emit zeros for flat-cash windows.
+
+    A flat-cash window contributes zeros to the RC candidate matrix.
+    If _stitch_benchmark_returns emits real B&H returns for that window,
+    the active return becomes (0 - bh_return), which penalises the strategy
+    for a window where it held no position. The correct active return is
+    0 - 0 = 0.
+
+    This test constructs two WindowResults directly: one with a trade
+    (non-flat), one without (flat-cash), runs _stitch_benchmark_returns,
+    and asserts the flat-cash segment is all zeros while the live segment
+    is nonzero.
+    """
+
+    def _make_window(
+        self,
+        close: pd.Series,
+        has_trade: bool,
+    ) -> object:
+        trades: list[Trade] = []
+        if has_trade:
+            trades = [
+                Trade(
+                    entry_date=close.index[0],
+                    exit_date=close.index[-1],
+                    entry_price=float(close.iloc[0]),
+                    exit_price=float(close.iloc[-1]),
+                    shares=1.0,
+                    transaction_costs=0.0,
+                    pnl=float(close.iloc[-1] - close.iloc[0]),
+                )
+            ]
+
+        dummy_metrics = MetricsResult(
+            sharpe_ratio=0.0,
+            sortino_ratio=0.0,
+            max_drawdown=0.0,
+            calmar_ratio=0.0,
+            omega_ratio=1.0,
+            p_value=1.0,
+        )
+
+        sim = SimulationResult(trades=trades, portfolio_values=close)
+        return WindowResult(
+            train_start=close.index[0],
+            train_end=close.index[0],
+            test_start=close.index[0],
+            test_end=close.index[-1],
+            simulation_result=sim,
+            metrics_result=dummy_metrics,
+        )
+
+    def test_flat_cash_segment_is_zeros(self) -> None:
+        idx_live = pd.date_range("2020-01-02", periods=6, freq="B")
+        idx_flat = pd.date_range("2020-01-10", periods=6, freq="B")
+
+        close_live = pd.Series([100.0, 102.0, 101.0, 104.0, 103.0, 105.0], index=idx_live)
+        close_flat = pd.Series([100.0, 98.0, 97.0, 99.0, 100.0, 101.0], index=idx_flat)
+
+        data = pd.DataFrame(
+            {"close": pd.concat([close_live, close_flat])},
+        )
+
+        live_window = self._make_window(close_live, has_trade=True)
+        flat_window = self._make_window(close_flat, has_trade=False)
+
+        result = _stitch_benchmark_returns(
+            [live_window, flat_window], data, execution=None
+        )
+
+        n_live = len(close_live) - 1   # 5 return bars
+        n_flat = len(close_flat) - 1   # 5 return bars
+
+        assert len(result) == n_live + n_flat
+
+        live_segment = result[:n_live]
+        flat_segment = result[n_live:]
+
+        # Live window: B&H returns are not all zero (prices move)
+        assert not np.all(live_segment == 0.0), (
+            "Live window segment should have nonzero B&H returns"
+        )
+
+        # Flat-cash window: must be all zeros regardless of price movement
+        assert np.all(flat_segment == 0.0), (
+            "Flat-cash window segment must be zeros; real B&H returns here "
+            "would produce nonzero active returns (0 - bh_return) for a "
+            "window where the strategy held no position."
         )

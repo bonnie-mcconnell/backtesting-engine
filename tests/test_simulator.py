@@ -58,11 +58,9 @@ class TestCompleteCycle:
         assert trade.exit_price == 103.0
 
     def test_shares_computed_correctly(self, five_day_data: pd.DataFrame) -> None:
-        # Correct sizing: position_value = (portfolio * fraction) / (1 + cost_rate)
+        # position_value = (portfolio * fraction) / (1 + cost_rate)
         # so that position_value + buy_cost == portfolio * fraction exactly,
-        # leaving zero residual cash (no negative-cash / micro-leverage).
-        # Old formula: shares = (portfolio * fraction) / entry_price
-        #   → spent portfolio * fraction PLUS the fee → cash went negative.
+        # leaving zero residual (no negative-cash / micro-leverage).
         signals = pd.Series([0, 1, 0, -1, 0], index=five_day_data.index)
         trade = run_simulation(five_day_data, signals).trades[0]
         available = INITIAL_PORTFOLIO_VALUE * POSITION_SIZE_FRACTION
@@ -129,17 +127,20 @@ class TestOpenPositionClose:
         assert trade.exit_date == five_day_data.index[-1]
 
     def test_final_portfolio_reflects_sell_cost(self, five_day_data: pd.DataFrame) -> None:
-        # After force-close, portfolio value should not include unsettled sell cost.
+        # After force-close on the last bar (104.0):
+        #   remaining_cash = INITIAL - INITIAL * fraction  (buy used exactly the allocated amount)
+        #   sell_proceeds  = shares * 104.0
+        #   sell_cost      = shares * 104.0 * cost_rate
+        #   final          = remaining_cash + sell_proceeds - sell_cost
         signals = pd.Series([0, 1, 0, 0, 0], index=five_day_data.index)
         result = run_simulation(five_day_data, signals)
         trade = result.trades[0]
         assert result.portfolio_values is not None
-        expected_final = (
-            (INITIAL_PORTFOLIO_VALUE * POSITION_SIZE_FRACTION)
-            * (104.0 / 101.0)
-            - trade.transaction_costs
-        )
-        assert np.isclose(float(result.portfolio_values.iloc[-1]), expected_final, rtol=1e-4)
+        remaining_cash = INITIAL_PORTFOLIO_VALUE * (1.0 - POSITION_SIZE_FRACTION)
+        sell_proceeds = trade.shares * 104.0
+        sell_cost = sell_proceeds * TRANSACTION_COST_RATE
+        expected_final = remaining_cash + sell_proceeds - sell_cost
+        assert np.isclose(float(result.portfolio_values.iloc[-1]), expected_final, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------

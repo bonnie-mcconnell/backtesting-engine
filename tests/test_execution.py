@@ -1,16 +1,27 @@
 """
 Unit tests for the execution model.
 
-Tests cover slippage fills, signal delay, config validation,
-and backward compatibility with the original simulator.
+Tests cover slippage fills, signal delay, config validation, cost sensitivity
+sweep, and parity between run_simulation and run_simulation_with_execution
+at default cost with zero slippage, and at fully zero friction.
 """
+
+import math
 
 import numpy as np
 import pandas as pd
 import pytest
+from helpers import make_oscillating_data
 
 from backtesting_engine.config import TRANSACTION_COST_RATE
-from backtesting_engine.execution import ExecutionConfig, run_simulation_with_execution
+from backtesting_engine.execution import (
+    ExecutionConfig,
+    cost_sensitivity_sweep,
+    run_simulation_with_execution,
+)
+from backtesting_engine.simulator import run_simulation
+from backtesting_engine.strategy.moving_average import MovingAverageStrategy
+from backtesting_engine.walk_forward import walk_forward
 
 
 def _ohlcv(n: int = 5, base: float = 100.0) -> pd.DataFrame:
@@ -22,11 +33,9 @@ def _ohlcv(n: int = 5, base: float = 100.0) -> pd.DataFrame:
         index=dates,
     )
 
-
 def _close_only(n: int = 5, base: float = 100.0) -> pd.DataFrame:
     dates = pd.date_range("2020-01-01", periods=n, freq="B")
     return pd.DataFrame({"close": np.linspace(base, base + n - 1, n)}, index=dates)
-
 
 # ---------------------------------------------------------------------------
 # ExecutionConfig validation
@@ -63,7 +72,6 @@ class TestExecutionConfig:
         with pytest.raises(Exception):
             ec.slippage_factor = 0.1  # type: ignore[misc]
 
-
 # ---------------------------------------------------------------------------
 # Slippage
 # ---------------------------------------------------------------------------
@@ -95,7 +103,6 @@ class TestSlippage:
         with pytest.raises(ValueError, match="high.*low|low.*high"):
             run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.1))
 
-
 # ---------------------------------------------------------------------------
 # Signal delay
 # ---------------------------------------------------------------------------
@@ -111,9 +118,9 @@ class TestSignalDelay:
         data = _close_only(n=7)
         signals = pd.Series([0, 1, 0, 0, -1, 0, 0], index=data.index)
         result = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1, slippage_factor=0.0))
-        if result.trades:
-            # Buy signal on bar 1 → executes at bar 2's price
-            assert result.trades[0].entry_price == data["close"].iloc[2]
+        assert len(result.trades) == 1, "These signals must produce exactly one trade."
+        # Buy signal on bar 1 → executes at bar 2's price
+        assert result.trades[0].entry_price == data["close"].iloc[2]
 
     def test_delay_does_not_increase_trade_count(self) -> None:
         data = _close_only(n=10)
@@ -122,24 +129,46 @@ class TestSignalDelay:
         r1 = run_simulation_with_execution(data, signals, ExecutionConfig(signal_delay=1, slippage_factor=0.0))
         assert len(r1.trades) <= len(r0.trades)
 
+# ── Simulator parity at zero cost/slippage ────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# Backward compatibility with original simulator
-# ---------------------------------------------------------------------------
+class TestSimulatorParity:
+    def test_zero_slippage_matches_reference_simulator_at_default_cost(self) -> None:
+        """Both engines must agree at the shared default transaction_cost_rate.
 
-class TestBackwardCompatibility:
-    def test_default_config_matches_original_simulator(self) -> None:
-        from backtesting_engine.simulator import run_simulation
-
+        Neither call below sets transaction_cost_rate, so both use
+        TRANSACTION_COST_RATE - this isolates the zero-slippage comparison
+        without also zeroing cost. See test_fully_zero_friction_matches_reference_simulator
+        for the all-frictions-off case.
+        """
         data = _close_only()
         signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
 
         r_orig = run_simulation(data, signals)
         r_new = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
 
+        assert len(r_orig.trades) == 1, "Test signals must produce exactly one trade."
         assert len(r_orig.trades) == len(r_new.trades)
-        if r_orig.trades:
-            assert abs(r_orig.trades[0].pnl - r_new.trades[0].pnl) < 1e-6
+        assert abs(r_orig.trades[0].pnl - r_new.trades[0].pnl) < 1e-6
+
+    def test_fully_zero_friction_matches_reference_simulator(self) -> None:
+        """Both engines must also agree with cost and slippage both zeroed."""
+        data = _close_only()
+        signals = pd.Series([0, 1, 0, -1, 0], index=data.index)
+
+        r_orig = run_simulation(data, signals)
+        r_new = run_simulation_with_execution(
+            data, signals,
+            ExecutionConfig(transaction_cost_rate=0.0, slippage_factor=0.0, signal_delay=0),
+        )
+
+        assert len(r_orig.trades) == 1, "Test signals must produce exactly one trade."
+        assert len(r_new.trades) == 1
+        # r_orig still pays TRANSACTION_COST_RATE (it has no zero-cost option), so
+        # compare r_new's pnl to a directly computed zero-friction round trip instead.
+        entry, exit_ = data["close"].iloc[1], data["close"].iloc[3]
+        expected_pnl = r_new.trades[0].shares * (exit_ - entry)
+        assert abs(r_new.trades[0].pnl - expected_pnl) < 1e-6
+        assert r_new.trades[0].transaction_costs == 0.0
 
     def test_portfolio_always_positive(self) -> None:
         data = _close_only()
@@ -147,7 +176,6 @@ class TestBackwardCompatibility:
         result = run_simulation_with_execution(data, signals, ExecutionConfig(slippage_factor=0.0, signal_delay=0))
         assert result.portfolio_values is not None
         assert (result.portfolio_values > 0).all()
-
 
 # ── Execution docstring currency ──────────────────────────────────────────────
 
@@ -165,31 +193,22 @@ class TestExecutionDocstring:
             "Docstring must not describe old zero-friction defaults as the standard mode"
         )
 
-
 # ── Cost sweep signal delay threading ─────────────────────────────────────────
 
 class TestCostSweepSignalDelay:
     """
     cost_sensitivity_sweep must honour the signal_delay parameter.
 
-    The sweep runs each (cost, slippage) cell in a worker process via
-    _sweep_worker. If signal_delay is not threaded through to the worker,
-    sweep results will silently use a different delay than the caller
-    specified - meaning a sweep at delay=0 would actually use delay=1
-    (or vice versa), making the heatmap non-comparable to a direct
-    walk_forward() call with the same parameters.
+    With n_workers=1 (the default) the sweep calls walk_forward directly in
+    the calling process. With n_workers > 1 it uses _sweep_worker, which
+    reconstructs the strategy by class name across subprocesses. Either way,
+    signal_delay must reach the ExecutionConfig used for each cell, otherwise
+    a sweep at delay=0 silently runs with delay=1 (or vice versa) and produces
+    results that aren't comparable to a direct walk_forward call.
     """
 
     def test_delay_zero_sharpe_differs_from_delay_one(self) -> None:
         """Sharpe must differ between delay=0 and delay=1 - fill timing changes outcomes."""
-        import math
-
-        from helpers import make_oscillating_data
-
-        from backtesting_engine.execution import ExecutionConfig
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
         data = make_oscillating_data(756, with_high_low=True)
 
         r0 = walk_forward(
@@ -219,14 +238,6 @@ class TestCostSweepSignalDelay:
         a different delay than specified - making the heatmap non-comparable
         to direct walk_forward calls with the same parameters.
         """
-        import math
-
-        from helpers import make_oscillating_data
-
-        from backtesting_engine.execution import ExecutionConfig, cost_sensitivity_sweep
-        from backtesting_engine.strategy.moving_average import MovingAverageStrategy
-        from backtesting_engine.walk_forward import walk_forward
-
         data = make_oscillating_data(756, with_high_low=True)
 
         direct = walk_forward(
